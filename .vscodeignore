@@ -1,0 +1,6 @@
+**
+!dist/extension.js
+!dist/worker.js
+!package.json
+!README.md
+!agent-image/Dockerfile

@@ -1,0 +1,10 @@
+{
+  // VS Code integration tests run under Mocha; its globals stay out of the
+  // rest of src.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "mocha"]
+  },
+  "include": ["."],
+  "exclude": []
+}

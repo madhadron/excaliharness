@@ -1,0 +1,30 @@
+x-dev: &dev
+  build: .
+  image: excaliharness-dev
+  init: true
+  working_dir: /workspace
+
+services:
+  # Everyday service: the checkout is read-only, so nothing run here (including
+  # dependency install scripts) can change .git, the Makefile or .vscode, which
+  # all run on the host later. Only dist/ is writable, for the built extension.
+  dev:
+    <<: *dev
+    volumes:
+      - .:/workspace:ro
+      - ./dist:/workspace/dist
+      # Kept in volumes: faster than a macOS bind mount, and Linux-only
+      # binaries (esbuild, VS Code for tests) never land in the checkout.
+      - node_modules:/workspace/node_modules
+      - vscode-test:/workspace/.vscode-test
+
+  # Only for `make lock`: writes package-lock.json back to the checkout.
+  lock:
+    <<: *dev
+    volumes:
+      - ./package.json:/workspace/package.json:ro
+      - ./package-lock.json:/workspace/package-lock.json
+
+volumes:
+  node_modules:
+  vscode-test:

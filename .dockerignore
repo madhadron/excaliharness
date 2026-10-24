@@ -1,0 +1,2 @@
+# No build needs files from the checkout; keep logs and secrets out of the context.
+*

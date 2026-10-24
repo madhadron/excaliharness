@@ -1,0 +1,20 @@
+services:
+  # The image under test. Variant A runs it directly:
+  #   docker compose -f experiments/setup-token/compose.yml run --rm agent claude setup-token
+  agent:
+    build: .
+    image: excaliharness-agent-base:experiment
+    profiles: [manual]
+
+  # The driver for variants B-D. Its own stdin/stdout are your terminal (for
+  # the code prompt), but the container it starts gets only Docker API streams,
+  # just as it would from the extension.
+  driver:
+    image: node:22-slim
+    profiles: [manual]
+    user: root  # needs the Docker socket; experiment only
+    working_dir: /exp
+    volumes:
+      - ./:/exp
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["node", "drive.mjs"]

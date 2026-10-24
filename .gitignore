@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.vsix
+.vscode-test/
+# Orchestrator cache and lock file in target repos (D-021); ignored here too.
+.excaliharness/
+experiments/*/runs/
+# Local Claude Code session state
+.claude/*.lock
+.claude/settings.local.json
