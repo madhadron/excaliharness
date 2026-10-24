@@ -43,10 +43,17 @@ before working, and humans record decisions there. The build and test
 infrastructure is all containers, so the host needs only Docker and VS Code.
 
 * Source code (`src/`), bundled by esbuild into `dist/`
-    * Extension: `src/extension.ts` (entry point) and `src/workerClient.ts`
-      (starts the worker and talks to it)
-    * Orchestrator worker: `src/worker/`, with `main.ts` as its entry point and
-      `protocol.ts` for the messages exchanged with the extension
+    * Extension: `src/extension.ts` (entry point) and the modules it wires up:
+      `workerClient.ts` (starts, talks to and restarts the worker),
+      `taskState.ts` (latest task snapshot), `links.ts` (wikilinks),
+      `diagnostics.ts` (Problems panel), `statusLens.ts` and `commands.ts`
+      (Mark ready / Mark done), `editorText.ts` (pure text helpers)
+    * Orchestrator worker: `src/worker/`, with `main.ts` as its entry point
+        * `protocol.ts`: messages exchanged with the extension
+        * `orchestrator.ts`: scans, applies status rules, writes, notifies
+        * `store.ts`, `watch.ts`, `lock.ts`, `git.ts`: safe writes, file
+          watching, the one-window-per-repo lock, reading git state
+        * `tasks/`: the task file model, parser, edits, status rules and index
 * Unit tests: `*.test.ts` next to the code they test (for example
   `src/worker/protocol.test.ts`), run by Vitest without VS Code
 * VS Code integration tests: `src/test/`, run by `@vscode/test-cli` in a real,
@@ -55,6 +62,7 @@ infrastructure is all containers, so the host needs only Docker and VS Code.
     * `src/test/fixtures/workspace/`: the workspace they open
 * Context shared by humans and agents
     * `docs/decisions.md`: approved decisions; agents must follow them
+    * `docs/task-format.md`: the task file and `TASKS.md` formats
     * `docs/experiments.md`: experiment results that decisions rely on
     * `docs/roadmap.md`: agreed future work and open constraints
     * `CLAUDE.md`: working rules for Claude sessions in this repository

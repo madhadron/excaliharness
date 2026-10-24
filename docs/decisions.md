@@ -53,6 +53,8 @@ question (see D-011) rather than made unilaterally.
   index keeps a single place to see every task. Lists instead of YAML were the
   human's choice.
 - Rejected: One `TASKS.md` holding every task; YAML metadata blocks.
+- Amended 2026-10-23: references in metadata are wikilinks (D-031); TASKS.md
+  sections are fixed by D-033 and D-034.
 
 ## D-006 Triggering: file watcher, status changes only
 - Date: 2026-10-23
@@ -61,6 +63,7 @@ question (see D-011) rather than made unilaterally.
   A file that doesn't parse is reported in its Updates section, never acted on.
 - Reason: Reacts immediately without half-finished edits launching agents.
 - Rejected: Git post-commit hook; an explicit `start` command.
+- Amended 2026-10-23: parse errors are reported as diagnostics (D-038).
 
 ## D-007 Task isolation: worktree per task, agents in containers
 - Date: 2026-10-23
@@ -89,6 +92,7 @@ question (see D-011) rather than made unilaterally.
 - Reason: The original five lacked an end state and states for "blocked on a
   person".
 - Rejected: Only the original five.
+- Amended 2026-10-23: `draft` added (D-047).
 
 ## D-010 "Ready for human" gate and notification
 - Date: 2026-10-23
@@ -158,6 +162,7 @@ question (see D-011) rather than made unilaterally.
 - Reason: VS Code doesn't follow `[[ ]]` links natively; about 30 lines with no
   extra dependency.
 - Rejected: The Foam extension; plain Markdown links.
+- Amended 2026-10-23: link targets extended by D-032.
 
 ## D-016 Parsing and IPC: orchestrator owns the files
 - Status: Removed, superseded by D-021.
@@ -324,3 +329,188 @@ question (see D-011) rather than made unilaterally.
 - Reason: Chosen by the human; nothing to publish or maintain outside the
   extension.
 - Rejected: Publishing the image to a registry and pulling it.
+
+## D-030 Task files are parsed line by line, and edited by line range
+- Date: 2026-10-23
+- Decision: A hand-written, line-based parser reads the constrained task
+  format (title, metadata list, `##` sections, Q/A items), skipping fenced code
+  blocks. Writes replace exact line ranges, leaving every other byte untouched.
+- Reason: No dependencies, and human formatting survives exactly.
+- Rejected: `remark`/mdast editing by source position; `remark` with re-stringify.
+
+## D-031 References in task metadata are wikilinks
+- Date: 2026-10-23
+- Decision: Metadata that refers to other entities uses wikilinks, e.g.
+  `* depends_on: [[T-001]], [[T-004]]`. This revises the example in D-005.
+- Reason: D-023.
+- Rejected: D-005's `[T-001, T-004]`.
+
+## D-032 Wikilink targets
+- Date: 2026-10-23
+- Decision: `[[T-NNN]]` resolves to `tasks/T-NNN.md`; `[[path/name]]` resolves
+  to `path/name.md` from the repo root (agents, docs). Extends D-015.
+- Reason: Pipelines link to agents, and D-023 wants links everywhere.
+- Rejected: Task ids only.
+
+## D-033 Pipelines in TASKS.md are a nested list
+- Date: 2026-10-23
+- Decision: `TASKS.md` has a `## Pipelines` section: each top-level item is a
+  pipeline name; its sub-items are `role: [[agents/name]], ...`. Fixes the
+  format D-008 left open.
+
+  ```markdown
+  ## Pipelines
+  * default
+      * implement: [[agents/implementer]]
+      * review: [[agents/test-reviewer]], [[agents/security-reviewer]]
+  ```
+- Reason: Same list-based, no-YAML style as task metadata (D-005).
+- Rejected: A YAML block; one file per pipeline.
+
+## D-034 The orchestrator maintains the TASKS.md index
+- Date: 2026-10-23
+- Decision: `TASKS.md` has a `## Index` section with one line per task file,
+  `* [[T-NNN]] Title · status`. The orchestrator adds and updates these lines;
+  everything else in the file is left alone.
+- Reason: The index stays correct and readable outside VS Code.
+- Rejected: Human-maintained index that the orchestrator checks; no index in
+  the file (extension tree view only).
+
+## D-035 Writes are atomic with an optimistic check
+- Date: 2026-10-23
+- Decision: The worker reads a file, applies its line-range edit, and writes it
+  atomically (temp file + rename) only if the file is unchanged since the read;
+  otherwise it re-reads and retries. VS Code reloads unmodified buffers and
+  warns on save for modified ones.
+- Reason: Keeps the worker the only writer (D-021) and testable without VS Code.
+- Rejected: Writing through the extension with `WorkspaceEdit`.
+
+## D-036 The worker watches task files with fs.watch
+- Date: 2026-10-23
+- Decision: The worker watches `TASKS.md` and `tasks/` with `fs.watch`,
+  debounced at 500 ms, and ignores its own writes by comparing content hashes.
+- Reason: Watching stays next to the logic and works in unit tests.
+- Rejected: VS Code's FileSystemWatcher forwarding events over IPC.
+- Amended 2026-10-23: watching a file follows its inode, so it goes deaf after
+  the first atomic rename. The worker watches the repo root (non-recursive,
+  filtered to `TASKS.md`) and the `tasks/` directory, re-arms if `tasks/` is
+  deleted or recreated, treats every event as a hint to rescan all task files,
+  and also rescans every 30 s for dropped events. Rejected: polling only.
+
+## D-037 Who changes which status
+- Date: 2026-10-23
+- Decision: The human sets `ready` (start work) and `done` (accept). The
+  orchestrator sets everything else, including `waiting-for-dependencies` ↔
+  `ready` from dependencies and infrastructure tasks (D-012), and
+  `needs-decision` ↔ resuming from Q/A checkboxes (D-011). A change that isn't
+  allowed is noted in the task's Updates and otherwise ignored; the
+  orchestrator never reverts human edits.
+- Reason: Human edits are never fought over, and nothing starts by accident.
+- Rejected: Reverting disallowed changes; allowing any change.
+
+## D-038 Parse errors are reported as VS Code diagnostics
+- Date: 2026-10-23
+- Decision: A task file that doesn't parse gets a diagnostic in the Problems
+  panel on the offending line, plus an Updates entry only when the Updates
+  section can still be found. Revises D-006's "reported in its Updates section".
+- Reason: Writing into a file that doesn't parse is risky; a squiggle points at
+  the exact line.
+- Rejected: An Updates entry only.
+
+## D-039 The worker pushes notifications to the extension
+- Date: 2026-10-23
+- Decision: Besides requests with an `id` (e.g. `tasks/list`), the IPC
+  protocol has notifications from the worker without an `id`
+  (`tasks/changed`, `tasks/diagnostics`).
+- Reason: The worker learns about changes first.
+- Rejected: The extension polling with requests.
+
+## D-040 Worker module layout for tasks
+- Date: 2026-10-23
+- Decision: `src/worker/tasks/` holds `model.ts`, `parse.ts`, `edit.ts` and
+  `transitions.ts`; `src/worker/watch.ts` does the watching; `src/links.ts` is
+  the extension's link provider.
+- Reason: Parsing, editing and transition rules can each be tested in isolation.
+- Rejected: A single `tasks.ts`.
+
+## D-041 Design principle: every capability is discoverable
+- Date: 2026-10-23
+- Decision: Every capability the extension or orchestrator offers has an
+  affordance that makes it discoverable where the human is working (a CodeLens,
+  command palette entry, context menu, hover, button or link), rather than
+  depending on the human knowing a file format, key or command name.
+- Reason: Chosen by the human.
+- Rejected: Capabilities reachable only by editing files or remembering commands.
+
+## D-042 Infrastructure tasks are marked in metadata
+- Date: 2026-10-23
+- Decision: An infrastructure task (D-012) has `* kind: infrastructure` in its
+  metadata list; without the key a task is a normal task.
+- Reason: Explicit, per task, and easy to show in the index.
+- Rejected: Inferring it from `pipeline: infrastructure`; an `## Infrastructure`
+  section in TASKS.md.
+
+## D-043 Status changes from the editor: CodeLens and commands
+- Date: 2026-10-23
+- Decision: Above a task's `status:` line, a CodeLens offers "Mark ready" and
+  "Mark done", each shown only when D-037 allows that change from the current
+  status. The command palette has the same actions ("Excaliharness: Mark Task
+  Ready", "Excaliharness: Mark Task Done") for the task in the active editor.
+  Both send `tasks/setStatus` to the worker, which checks the rule and writes.
+- Reason: D-041; editing the status line by hand is error-prone and hard to
+  discover.
+- Rejected: A quick pick of allowed statuses; leaving it for later.
+
+## D-044 A second window on the same repo is read-only
+- Date: 2026-10-23
+- Decision: The worker holding the D-021 lock orchestrates; a worker in another
+  window on the same repo runs read-only. Links, diagnostics and CodeLens still
+  work there; writes (Mark ready/done) are disabled with a message saying
+  another window is orchestrating, and it takes over when the lock is released
+  or found stale.
+- Reason: Two writers would fight over the same files.
+- Rejected: Leaving the second window inactive.
+
+## D-045 Marking a task with unsaved edits
+- Date: 2026-10-23
+- Decision: When Mark ready/done is used on a task file with unsaved changes,
+  the extension refuses and shows a message with a "Save and mark ready" (or
+  "Save and mark done") button. Nothing is saved without that click.
+- Reason: The worker writes to disk, and a later save of the stale buffer would
+  overwrite its change.
+- Rejected: Saving automatically; refusing without the button.
+
+## D-046 The extension restarts a crashed worker
+- Date: 2026-10-23
+- Decision: If the worker exits unexpectedly, the extension restarts it after
+  1 s, 2 s, 4 s and so on, up to 30 s. After 5 crashes within 5 minutes it
+  stops and shows an error with a "Restart worker" button and a link to the
+  log. Each start reconciles from the files (D-004).
+- Reason: The watcher lives in the worker, so a crash would otherwise stop all
+  orchestration silently.
+- Rejected: No automatic restart.
+
+## D-047 New tasks start as `draft`
+- Date: 2026-10-23
+- Decision: D-009 gains `draft`, the status of a task the human is still
+  writing; the orchestrator never changes a draft. "Mark ready" moves `draft`
+  (or `needs-human`) to `ready`; the orchestrator then moves `ready` to
+  `waiting-for-dependencies` while dependencies aren't done, and back when they
+  are. A task file seen for the first time with no recorded status change is
+  treated as coming from `draft`.
+- Reason: Otherwise a task could be promoted, and later started, while the
+  human is still editing it.
+- Rejected: No new status, with new tasks starting in waiting-for-dependencies.
+
+## D-048 The orchestrator lock has a heartbeat
+- Date: 2026-10-24
+- Decision: The worker holding the lock (D-021, D-044) touches the lock file
+  every 10 s. A lock not touched for 60 s is stale whatever host it names; on
+  the same host, a lock whose pid is dead or belongs to another program is
+  stale at once. The heartbeat also checks the lock still holds the worker's
+  record and switches it to read-only if not.
+- Reason: Without it, a lock naming another host was never stale, so a
+  hostname change (common on macOS) after a crash, or a lock file committed to
+  the repo, left every window read-only for good.
+- Rejected: Never taking over a lock from another host; ignoring the host and
+  relying on the pid check alone.

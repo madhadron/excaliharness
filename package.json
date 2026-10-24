@@ -11,16 +11,57 @@
   "categories": [
     "Other"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Excaliharness runs a worker that reads and writes the repository's task files, so it only runs in trusted workspaces."
+    }
+  },
   "activationEvents": [
     "workspaceContains:TASKS.md"
   ],
   "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "excaliharness.markReady",
+        "title": "Mark Task Ready",
+        "category": "Excaliharness"
+      },
+      {
+        "command": "excaliharness.markDone",
+        "title": "Mark Task Done",
+        "category": "Excaliharness"
+      },
+      {
+        "command": "excaliharness.restartWorker",
+        "title": "Restart Worker",
+        "category": "Excaliharness"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "excaliharness.markReady",
+          "when": "excaliharness.active && resourcePath =~ /[\\\\/]tasks[\\\\/]T-[0-9]+\\.md$/"
+        },
+        {
+          "command": "excaliharness.markDone",
+          "when": "excaliharness.active && resourcePath =~ /[\\\\/]tasks[\\\\/]T-[0-9]+\\.md$/"
+        },
+        {
+          "command": "excaliharness.restartWorker",
+          "when": "excaliharness.active"
+        }
+      ]
+    }
+  },
   "scripts": {
     "build": "node esbuild.mjs",
     "typecheck": "tsc && tsc -p src/test",
     "lint": "eslint .",
     "test:unit": "vitest run",
-    "test:vscode": "node esbuild.mjs && xvfb-run -a vscode-test",
+    "test:vscode": "node esbuild.mjs && rm -rf .vscode-test/workspace && cp -r src/test/fixtures/workspace .vscode-test/workspace && xvfb-run -a vscode-test",
     "package": "node esbuild.mjs && vsce package --skip-license --allow-missing-repository --no-rewrite-relative-links --out dist/"
   },
   "devDependencies": {

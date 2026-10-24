@@ -36,11 +36,38 @@ tasks.
   task worktree an agent can edit (D-008).
 - **The worker holds host Docker access**, which is root-equivalent. Every Engine
   API field it sets comes from an allowlist, never from agent output.
+- **Status history can be forged by agents.** The recorded status is the last
+  `status: a → b` line in Updates, whoever wrote it, and statuses arriving
+  through git are accepted. An agent that edits its task file, or whose commit
+  is merged, could mark tasks `done` or `ready`. Accept status only from the
+  main checkout and treat worktree task-file changes as proposals.
+- **Pipelines from agent-editable files.** `pipeline:` in a task file, and the
+  agent links in `TASKS.md`, must be read from the main checkout and resolved
+  with the same `..`, absolute-path and symlink checks as wikilinks.
 - **Supply chain for the agent image.** Claude Code is pinned by version but not
   by integrity hash, and its install scripts run at build time.
 
-## Worker restart
-- Added: 2026-10-23, from the robustness review.
-- Nothing restarts the orchestrator worker if it crashes; until the window
-  reloads, every request fails with "worker is not running". Decide whether the
-  extension restarts it (with backoff) when the worker gains real state.
+## Idempotent agent side effects
+- Added: 2026-10-23, from the robustness review of the task-file plan.
+- When transitions start agents, a restart or a reverted save can re-run
+  `ready → in-implementation`. Side effects must use deterministic names
+  (container and branch per task) and check for or remove existing ones first,
+  so a task never gets two agents.
+
+## New task from TASKS.md
+- Added: 2026-10-23
+- A "New task" CodeLens above the `## Index` section of `TASKS.md` (D-041)
+  that asks for the task's name, takes the next free id, creates
+  `tasks/T-NNN.md` with the title, `* status: draft` and every section header
+  from docs/task-format.md, and opens a chat session to plan the task with the
+  human. The index line and link appear when the orchestrator regenerates the
+  index (D-034), so the scaffold only needs to create the file.
+
+## Hand edits into orchestrator-managed statuses
+- Added: 2026-10-23, from the correctness review of the task-file feature.
+- D-037 notes a hand edit that isn't allowed and leaves it. The orchestrator
+  skips acting on it in the same step, but afterwards treats the new status
+  normally: hand-editing a draft to `waiting-for-dependencies` lets it become
+  `ready` once its dependencies are done, which D-047 meant to prevent. Decide
+  whether such a task should stay parked until the human sets an allowed
+  status.
