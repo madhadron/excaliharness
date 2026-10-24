@@ -22,6 +22,19 @@ interface Pending {
 
 export const DEFAULT_TIMEOUT_MS = 5_000;
 
+const redact = (text: string) => text.replace(/sk-ant-[A-Za-z0-9_-]+/g, "[token]");
+
+// An error the worker reported, with its code when it gave one.
+export class WorkerError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "WorkerError";
+  }
+}
+
 export interface RestartPolicy {
   baseDelayMs: number;
   maxDelayMs: number;
@@ -34,6 +47,8 @@ export const DEFAULT_RESTART: RestartPolicy = { baseDelayMs: 1_000, maxDelayMs: 
 export interface WorkerClientOptions {
   workerPath: string;
   root: string;
+  // The base agent image's Dockerfile, shipped in the extension (D-029).
+  dockerfile: string;
   log: (line: string) => void;
   onNotification: (notification: Notification) => void;
   // The worker exited; anything derived from it (diagnostics) is now stale.
@@ -106,7 +121,7 @@ export class WorkerClient {
 
   private spawn(): void {
     this.versions = new Map();
-    const child = fork(this.options.workerPath, [this.options.root], {
+    const child = fork(this.options.workerPath, [this.options.root, this.options.dockerfile], {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
       // Don't inherit the extension host's --inspect flags when debugging.
       execArgv: [],
@@ -120,7 +135,7 @@ export class WorkerClient {
       if (!current()) return;
       if (isResponse(message)) this.settle(message);
       else if (isNotification(message)) this.notify(message);
-      else this.log(`[worker] ignored malformed message: ${JSON.stringify(message)}`);
+      else this.log(`[worker] ignored malformed message: ${redact(JSON.stringify(message) ?? String(message)).slice(0, 200)}`);
     });
     child.on("error", (error) => {
       if (!current()) return;
@@ -135,9 +150,11 @@ export class WorkerClient {
   }
 
   private notify(notification: Notification): void {
-    const last = this.versions.get(notification.method) ?? 0;
-    if (notification.params.version <= last) return; // Older than what we have.
-    this.versions.set(notification.method, notification.params.version);
+    if ("version" in notification.params) {
+      const last = this.versions.get(notification.method) ?? 0;
+      if (notification.params.version <= last) return; // Older than what we have.
+      this.versions.set(notification.method, notification.params.version);
+    }
     this.options.onNotification(notification);
   }
 
@@ -174,7 +191,7 @@ export class WorkerClient {
     if (!entry) return;
     this.pending.delete(message.id);
     clearTimeout(entry.timer);
-    if ("error" in message) entry.reject(new Error(message.error));
+    if ("error" in message) entry.reject(new WorkerError(message.error, message.code));
     else entry.resolve(message.result);
   }
 

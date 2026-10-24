@@ -71,7 +71,36 @@ describe("dispatch", () => {
     "tasks/setStatus": () => {
       throw new Error("refused");
     },
+    "auth/signIn": () => {
+      throw Object.assign(new Error("no Docker"), { code: "docker-unavailable" });
+    },
+    "auth/submitCode": () => "accepted",
+    "auth/cancel": () => undefined,
   };
+
+  it("sends null for a handler that returns nothing, so the reply survives IPC", async () => {
+    await expect(dispatch({ id: 5, method: "auth/cancel" }, handlers)).resolves.toEqual({ id: 5, result: null });
+  });
+
+  it("passes an error's code along", async () => {
+    await expect(dispatch({ id: 4, method: "auth/signIn" }, handlers)).resolves.toEqual({ id: 4, error: "no Docker", code: "docker-unavailable" });
+  });
+
+  it("validates sign-in parameters", () => {
+    expect(isRequest({ id: 1, method: "auth/submitCode", params: { attempt: 1, code: "abc" } })).toBe(true);
+    expect(isRequest({ id: 1, method: "auth/submitCode", params: { code: "abc" } })).toBe(false);
+    expect(isRequest({ id: 1, method: "auth/submitCode", params: { attempt: 1, code: 5 } })).toBe(false);
+    expect(isRequest({ id: 1, method: "auth/submitCode", params: { attempt: 1, code: "x".repeat(3_000) } })).toBe(false);
+    expect(isRequest({ id: 1, method: "auth/cancel", params: { attempt: 2 } })).toBe(true);
+    expect(isRequest({ id: 1, method: "auth/cancel" })).toBe(true);
+  });
+
+  it("accepts sign-in notifications only with https URLs", () => {
+    expect(isNotification({ method: "auth/prompt", params: { url: "https://claude.com/x", attempt: 1 } })).toBe(true);
+    expect(isNotification({ method: "auth/prompt", params: { url: "https://claude.com/x" } })).toBe(false);
+    expect(isNotification({ method: "auth/prompt", params: { url: "javascript:alert(1)", attempt: 1 } })).toBe(false);
+    expect(isNotification({ method: "progress", params: { message: "Building" } })).toBe(true);
+  });
 
   it("answers with the handler's result, awaited", async () => {
     await expect(dispatch({ id: 7, method: "ping" }, handlers)).resolves.toEqual({ id: 7, result: "pong" });

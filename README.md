@@ -47,12 +47,15 @@ infrastructure is all containers, so the host needs only Docker and VS Code.
       `workerClient.ts` (starts, talks to and restarts the worker),
       `taskState.ts` (latest task snapshot), `links.ts` (wikilinks),
       `diagnostics.ts` (Problems panel), `statusLens.ts` and `commands.ts`
-      (Mark ready / Mark done), `editorText.ts` (pure text helpers)
+      (Mark ready / Mark done), `auth.ts` (Claude sign-in and the token),
+      `editorText.ts` (pure text helpers)
     * Orchestrator worker: `src/worker/`, with `main.ts` as its entry point
         * `protocol.ts`: messages exchanged with the extension
         * `orchestrator.ts`: scans, applies status rules, writes, notifies
         * `store.ts`, `watch.ts`, `lock.ts`, `git.ts`: safe writes, file
           watching, the one-window-per-repo lock, reading git state
+        * `docker.ts`, `agentImage.ts`, `signIn.ts`: the Docker Engine client,
+          building the base agent image, and Claude sign-in
         * `tasks/`: the task file model, parser, edits, status rules and index
 * Unit tests: `*.test.ts` next to the code they test (for example
   `src/worker/protocol.test.ts`), run by Vitest without VS Code

@@ -47,6 +47,13 @@ export interface MethodParams {
   ping: undefined;
   "tasks/list": undefined;
   "tasks/setStatus": SetStatusParams;
+  // Runs the whole sign-in; the result is { token } once it has been checked.
+  "auth/signIn": undefined;
+  // A code the human pasted, for the attempt its prompt named; the result is
+  // "accepted", "invalid" or "no-response".
+  "auth/submitCode": { attempt: number; code: string };
+  // Without an attempt, cancels whatever sign-in is running.
+  "auth/cancel": { attempt?: number } | undefined;
 }
 
 export type Method = keyof MethodParams;
@@ -54,6 +61,11 @@ export type Method = keyof MethodParams;
 export interface NotificationParams {
   "tasks/changed": TasksSnapshot;
   "tasks/diagnostics": DiagnosticsSnapshot;
+  // The sign-in page to open (only on Claude's own sites), and which attempt
+  // it belongs to.
+  "auth/prompt": { url: string; attempt: number };
+  // What a long request is doing now, for a progress notification.
+  progress: { message: string };
 }
 
 export type NotificationMethod = keyof NotificationParams;
@@ -62,9 +74,11 @@ export type Request = { [M in Method]: { id: number; method: M; params: MethodPa
 
 export type Notification = { [M in NotificationMethod]: { method: M; params: NotificationParams[M] } }[NotificationMethod];
 
+// `code` lets the extension react to specific failures, such as
+// "docker-unavailable" or "timeout".
 export type Response =
   | { id: number; result: unknown }
-  | { id: number; error: string };
+  | { id: number; error: string; code?: string };
 
 type Record_ = Record<string, unknown>;
 
@@ -90,6 +104,9 @@ const paramGuards: { [M in Method]: (params: unknown) => boolean } = {
   ping: (p) => p === undefined,
   "tasks/list": (p) => p === undefined,
   "tasks/setStatus": isSetStatusParams,
+  "auth/signIn": (p) => p === undefined,
+  "auth/submitCode": (p) => isObject(p) && Number.isSafeInteger(p.attempt) && typeof p.code === "string" && p.code.length <= 2_000,
+  "auth/cancel": (p) => p === undefined || (isObject(p) && (p.attempt === undefined || Number.isSafeInteger(p.attempt))),
 };
 
 export function isRequest(message: unknown): message is Request {
@@ -115,6 +132,15 @@ export function isNotification(message: unknown): message is Notification {
   if (message.method === "tasks/diagnostics") {
     return isSnapshotShape(message.params) && Array.isArray((message.params as Record_).files);
   }
+  if (message.method === "auth/prompt") {
+    return (
+      isObject(message.params) &&
+      typeof message.params.url === "string" &&
+      message.params.url.startsWith("https://") &&
+      Number.isSafeInteger(message.params.attempt)
+    );
+  }
+  if (message.method === "progress") return isObject(message.params) && typeof message.params.message === "string";
   return false;
 }
 
@@ -128,8 +154,12 @@ export async function dispatch(message: unknown, handlers: Handlers): Promise<Re
   }
   try {
     const handler = handlers[message.method] as (params: unknown) => unknown;
-    return { id: message.id, result: await handler(message.params) };
+    // JSON over IPC drops undefined fields, and a response needs `result`.
+    return { id: message.id, result: (await handler(message.params)) ?? null };
   } catch (error) {
-    return { id: message.id, error: error instanceof Error ? error.message : String(error) };
+    const response: Response = { id: message.id, error: error instanceof Error ? error.message : String(error) };
+    const code = (error as { code?: unknown } | null)?.code;
+    if (typeof code === "string") response.code = code;
+    return response;
   }
 }

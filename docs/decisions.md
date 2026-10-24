@@ -514,3 +514,115 @@ question (see D-011) rather than made unilaterally.
   the repo, left every window read-only for good.
 - Rejected: Never taking over a lock from another host; ignoring the host and
   relying on the pid check alone.
+
+## D-049 Sign-in starts when first needed, and is always reachable
+- Date: 2026-10-24
+- Decision: Sign-in (D-022) starts the first time something needs a token. A
+  "Sign In to Claude" command and a status bar item ("Claude: signed in" /
+  "Claude: sign in", clickable) make it reachable at any time (D-041).
+- Reason: No prompt before anything needs it, but always visible.
+- Rejected: Prompting at every activation without a token.
+
+## D-050 The worker runs Docker; the extension holds the token
+- Date: 2026-10-24
+- Decision: The worker builds the base image and runs the sign-in container.
+  The extension shows the sign-in UI and keeps the token in SecretStorage,
+  handing it to the worker over IPC only when needed; the worker keeps it in
+  memory and never logs it.
+- Reason: Docker access stays in one process; SecretStorage only exists in the
+  extension.
+- Rejected: The extension driving Docker itself.
+
+## D-051 Docker: CLI for builds, Engine API for containers
+- Date: 2026-10-24
+- Decision: Images are built with `docker build`. Containers are created,
+  attached to and removed through the Docker Engine API over its Unix socket,
+  using Node built-ins only (as in E-001).
+- Reason: Building through the API means streaming the context as a tar;
+  attaching to a container's terminal needs the API, and E-001 showed it works
+  without a dependency.
+- Rejected: The `dockerode` library; the CLI for everything.
+
+## D-052 The base image is identified by ID and never pulled
+- Date: 2026-10-24
+- Decision: The base image is built with `--pull=false`, labeled
+  `org.excaliharness.dockerfile-sha256=<hash of its Dockerfile>`, and tagged
+  `excaliharness-agent-base:<first 12 hex digits of that hash>` for people to
+  read. Containers are created from the image ID (`sha256:…`) written by
+  `--iidfile`, never from a name, and the worker never pulls an image. An image
+  found under the tag is reused only if its label matches; otherwise it is
+  rebuilt. The only network fetch in the build is the base image, pinned by
+  digest. A progress notification with "Show log" covers the build.
+- Reason: A name can never bring in someone else's image from a registry, and
+  a changed Dockerfile is rebuilt automatically (D-029).
+- Rejected: Running by tag; tagging with the extension version.
+- Amended 2026-10-24, from the security review:
+  - The build fetches more than the base image: `apt-get` packages and the
+    pinned Claude Code npm package (with its unpinned dependencies and install
+    scripts). The base image itself is fetched only if missing, and its
+    digest is verified.
+  - The label guards against a stale image, not tampering: anyone who can run
+    Docker on the machine could forge it, and they are root-equivalent anyway.
+  - The build is sent to the same daemon as the API calls (`docker -H
+    unix://<socket>`, with DOCKER_HOST, DOCKER_CONTEXT and BUILDX_BUILDER
+    cleared).
+  - VS Code's progress notifications can't have buttons, so "Show log" is
+    offered when sign-in fails rather than during the build.
+
+## D-053 The token is checked once, after sign-in
+- Date: 2026-10-24
+- Decision: Right after sign-in, the worker runs `claude -p "Reply with
+  exactly: ok"` in a fresh container with only the token; after that the token
+  is trusted until an agent run rejects it, which starts sign-in again (D-022).
+- Reason: Catches a bad paste while the human is there, at no recurring cost.
+- Rejected: Checking at every start; never checking.
+
+## D-054 Sign-in UI
+- Date: 2026-10-24
+- Decision: A notification with "Open sign-in page", then a password input box
+  titled "Paste the code shown after you sign in". A rejected code shows "That
+  code didn't work" and a new input box. After 10 minutes: "Sign-in timed out"
+  with a Retry button.
+- Reason: Native VS Code UI, covering the cases E-001 found.
+- Rejected: A webview panel.
+- Amended 2026-10-24, from the first successful manual sign-in: after Enter
+  the code box stays open, greyed out and disabled, with VS Code's progress bar
+  (no extra spinner, at the human's request), while the code is checked ("Checking
+  the code with Claude…") and then the new token ("Code accepted. Checking the
+  new token…"). It closes when sign-in finishes; a rejected code makes it
+  editable again with "That code didn't work." under it.
+
+## D-055 Docker availability is checked before use
+- Date: 2026-10-24
+- Decision: Before building or running anything, the worker checks the Docker
+  socket. If Docker can't be reached, the extension shows "Docker isn't running"
+  with a Retry button.
+- Reason: A clear message at the moment it matters.
+- Rejected: Failing partway through a build.
+
+## D-056 Sign-in containers are hardened
+- Date: 2026-10-24
+- Decision: Sign-in and token-check containers run with `CapDrop: ALL`,
+  `no-new-privileges`, a read-only root filesystem with tmpfs for the home
+  directory and /tmp, a non-root user, no mounts, and are removed when done.
+- Reason: They need nothing but network access to claude.ai.
+- Rejected: Docker's defaults.
+- Amended 2026-10-24, from the security and robustness reviews: also a
+  numeric user (1000:1000), private IPC, a 256-process limit, 1 GB of memory,
+  size-limited tmpfs mounts with noexec, nosuid and nodev, and a role label so
+  leftovers from a crashed worker are removed before each sign-in. The sign-in
+  container keeps no log on the daemon (its output contains the token), is
+  removed automatically when it exits, and runs under `timeout` so it ends
+  even if the worker is gone.
+
+## D-057 Signed-in status bar offers sign in again or sign out
+- Date: 2026-10-24
+- Decision: Clicking "Claude: signed in" opens a dialog, "Excaliharness is
+  signed in to Claude.", with "Sign in again" (replaces the stored token) and
+  "Sign out" (removes it from VS Code). The dialog says the token stays valid
+  until revoked on claude.ai. "Sign Out of Claude" is also in the command
+  palette while signed in (D-041). Clicking "Claude: sign in" still signs in
+  directly.
+- Reason: Chosen by the human; a click on "signed in" shouldn't silently start
+  a new sign-in.
+- Rejected: Always starting a new sign-in on click.

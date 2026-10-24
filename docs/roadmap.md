@@ -45,7 +45,13 @@ tasks.
   agent links in `TASKS.md`, must be read from the main checkout and resolved
   with the same `..`, absolute-path and symlink checks as wikilinks.
 - **Supply chain for the agent image.** Claude Code is pinned by version but not
-  by integrity hash, and its install scripts run at build time.
+  by integrity hash, its dependencies aren't pinned, and its install scripts
+  run at build time; apt packages aren't pinned either. Options: install from
+  a shipped package-lock with `npm ci`, and snapshot apt sources.
+- **Container network reach.** Containers get Docker's default bridge network,
+  which on Docker Desktop reaches `host.docker.internal` (services listening on
+  the Mac's loopback) and the LAN, and on Linux cloud metadata addresses. Agent
+  containers should get a network that only reaches what they need.
 
 ## Idempotent agent side effects
 - Added: 2026-10-23, from the robustness review of the task-file plan.

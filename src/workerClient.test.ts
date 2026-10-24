@@ -42,6 +42,7 @@ describe("WorkerClient", () => {
     const client = new WorkerClient({
       workerPath: crash,
       root: dir,
+      dockerfile: "unused",
       log: () => {},
       onNotification: () => {},
       onExit: () => exits++,
@@ -69,10 +70,10 @@ describe("WorkerClient", () => {
     );
     const seen: Notification[] = [];
     const logs: string[] = [];
-    const client = new WorkerClient({ workerPath: worker, root: dir, log: (l) => logs.push(l), onNotification: (n) => seen.push(n), restart: policy });
+    const client = new WorkerClient({ workerPath: worker, root: dir, dockerfile: "unused", log: (l) => logs.push(l), onNotification: (n) => seen.push(n), restart: policy });
     clients.push(client);
     await expect(client.request("ping")).resolves.toBe("pong");
     await waitFor(() => logs.some((l) => l.includes("malformed")));
-    expect(seen.map((n) => n.params.version)).toEqual([2]);
+    expect(seen.map((n) => ("version" in n.params ? n.params.version : undefined))).toEqual([2]);
   });
 });

@@ -24,6 +24,21 @@
   "contributes": {
     "commands": [
       {
+        "command": "excaliharness.signIn",
+        "title": "Sign In to Claude",
+        "category": "Excaliharness"
+      },
+      {
+        "command": "excaliharness.signOut",
+        "title": "Sign Out of Claude",
+        "category": "Excaliharness"
+      },
+      {
+        "command": "excaliharness.claudeAccount",
+        "title": "Claude Account",
+        "category": "Excaliharness"
+      },
+      {
         "command": "excaliharness.markReady",
         "title": "Mark Task Ready",
         "category": "Excaliharness"
@@ -52,6 +67,18 @@
         {
           "command": "excaliharness.restartWorker",
           "when": "excaliharness.active"
+        },
+        {
+          "command": "excaliharness.signIn",
+          "when": "excaliharness.active"
+        },
+        {
+          "command": "excaliharness.signOut",
+          "when": "excaliharness.active && excaliharness.signedIn"
+        },
+        {
+          "command": "excaliharness.claudeAccount",
+          "when": "false"
         }
       ]
     }
@@ -61,7 +88,7 @@
     "typecheck": "tsc && tsc -p src/test",
     "lint": "eslint .",
     "test:unit": "vitest run",
-    "test:vscode": "node esbuild.mjs && rm -rf .vscode-test/workspace && cp -r src/test/fixtures/workspace .vscode-test/workspace && xvfb-run -a vscode-test",
+    "test:vscode": "node esbuild.mjs && rm -rf .vscode-test/workspace && cp -r src/test/fixtures/workspace .vscode-test/workspace && rm -rf .vscode-test/workspace/.excaliharness && xvfb-run -a vscode-test",
     "package": "node esbuild.mjs && vsce package --skip-license --allow-missing-repository --no-rewrite-relative-links --out dist/"
   },
   "devDependencies": {
