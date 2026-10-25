@@ -923,3 +923,58 @@ question (see D-011) rather than made unilaterally.
     characters where it enters the worker. Losing the lock stops running
     tasks.
 
+
+## D-080 Rebuilds run offline first
+- Date: 2026-10-25
+- Decision: Between rounds (D-062, D-070) the dev and derived images are
+  rebuilt from the worktree with the build's network off. If that build
+  fails, the task goes to `needs-human` with the diff of the Dockerfile and
+  dependency files since the last image; marking it `ready` allows one build
+  with the network on.
+- Reason: Agent-written build steps never reach the network without the
+  human seeing them; cached and offline steps need no prompt.
+- Rejected: Always building online; never building online.
+
+## D-081 Gates run on a copy of the round's commit
+- Date: 2026-10-25
+- Decision: The worker exports the round's commit into a throwaway folder
+  and runs the README's required gates there, read-write, in a fresh
+  container of the agent image (same lockdown and networks). All gates
+  together get 20 minutes; running over is a gate failure.
+- Reason: Gates test exactly what was committed, and nothing they write
+  reaches the worktree or a commit.
+- Rejected: Running gates in the worktree; only the round's 60-minute limit.
+
+## D-082 Reviewers start fresh each round and run at once
+- Date: 2026-10-25
+- Decision: Each round's reviewers get new sessions, the current diff from
+  the main checkout's branch, and the previous round's findings only to check
+  they were fixed. A pipeline's reviewers run at the same time, each in its
+  own one-off container; they don't count against `maxParallelTasks`. A
+  reviewer must call `report_findings` (an empty list means clean); ending
+  without it counts as a finding.
+- Reason: Reviewers judge the work as it is, not anchored to earlier rounds;
+  rounds finish sooner.
+- Rejected: Resuming reviewer sessions; reviewers one after another.
+
+## D-083 Questions pause the round; rounds and findings in Updates
+- Date: 2026-10-25
+- Decision: An `ask_question` from any agent pauses the round; once answered,
+  that round resumes and the count carries on. Only marking a `needs-human`
+  task `ready` starts the count again. Each round adds one Updates line
+  ("round 2: `make test` failed; 3 findings (1 blocking)"). On `needs-human`,
+  each open finding gets an Updates line linking to the file in the
+  worktree, up to 20, then "and N more".
+- Reason: Questions can't get around the limit (D-072); the task file stays
+  the one place to look (D-041).
+- Rejected: Resetting the count on every answer; a `## Findings` section.
+
+## D-084 Spoken notifications are a setting
+- Date: 2026-10-25
+- Decision: `excaliharness.speakNotifications` (default true) controls
+  D-077's `say`; the visual notification always shows. "Open review" opens
+  the worktree folder, which VS Code's Workspace Trust leaves untrusted, so
+  its tasks and workspace settings don't run. Amends D-077.
+- Reason: Speech isn't always welcome; trust keeps an agent's `.vscode`
+  files inert.
+- Rejected: Always speaking.
