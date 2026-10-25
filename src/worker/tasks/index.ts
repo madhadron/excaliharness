@@ -6,6 +6,7 @@ export interface IndexEntry {
   // Absent when the task file doesn't parse.
   title?: string;
   status?: string;
+  parked?: boolean;
 }
 
 export function taskNumber(id: string): number {
@@ -15,5 +16,5 @@ export function taskNumber(id: string): number {
 export function indexLines(entries: IndexEntry[]): string[] {
   return [...entries]
     .sort((a, b) => taskNumber(a.id) - taskNumber(b.id) || a.id.localeCompare(b.id))
-    .map((e) => (e.status === undefined ? `* [[${e.id}]] · does not parse` : `* [[${e.id}]]${e.title ? ` ${e.title}` : ""} · ${e.status}`));
+    .map((e) => (e.status === undefined ? `* [[${e.id}]] · does not parse` : `* [[${e.id}]]${e.title ? ` ${e.title}` : ""} · ${e.parked ? `parked (${e.status})` : e.status}`));
 }

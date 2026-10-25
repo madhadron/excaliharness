@@ -21,7 +21,9 @@ const HEADING = /^## +(.+?)(?:[ \t]+#+)?[ \t]*$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const QUESTION = /^[*-][ \t]+\[([ xX])\][ \t]+Q:[ \t]*(.*?)[ \t]*$/;
 const ANSWER = /^[ \t]+A:[ \t]?(.*?)[ \t]*$/;
-const STATUS_ENTRY = /^[*-][ \t]+.* · .* · status: (\S+) → (\S+)(?: · .*)?$/;
+const STATUS_ENTRY = /^[*-][ \t]+.* · .* · status: (\S+) → (\S+)(?: · (.*))?$/;
+// A reason ending in "parked" marks the entry that parked the task (D-076).
+const PARKED = /(?:^|[\s;])parked$/;
 const WIKILINK = /^\[\[([^\]\n]+)\]\]$/;
 const TASK_ID = /^T-\d+$/;
 const PIPELINE = /^[*-][ \t]+(\S.*?)[ \t]*$/;
@@ -235,7 +237,10 @@ export function parseTask(text: string, expectedId: string): ParseResult<Task> {
     for (let l = updates.heading + 1; l < updates.end; l++) {
       if (fences.inside.has(l)) continue;
       const m = STATUS_ENTRY.exec(lines[l] ?? "");
-      if (m?.[1] && m[2]) statusEntries.push({ from: m[1], to: m[2], line: l });
+      if (!m?.[1] || !m[2]) continue;
+      const entry: StatusEntry = { from: m[1], to: m[2], line: l };
+      if (PARKED.test(m[3] ?? "")) entry.parked = true;
+      statusEntries.push(entry);
     }
   }
 

@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Orchestrator } from "./orchestrator";
+import { TaskBlocked, TokenRejected } from "./runner/runner";
 import { hashOf, TEMP_PREFIX } from "./store";
 import type { DiagnosticsSnapshot, Notification, TasksSnapshot } from "./protocol";
 
@@ -74,7 +75,7 @@ describe("Orchestrator passes", () => {
     await orchestrator.runPass();
     const text = read("tasks/T-1.md");
     expect(text).toContain("* status: review");
-    expect(text.match(/edited by hand, but review is set by the orchestrator; left as is/g)).toHaveLength(1);
+    expect(text.match(/edited by hand, but review is set by the orchestrator; parked/g)).toHaveLength(1);
   });
 
   it("records an allowed hand edit as the human's", async () => {
@@ -226,5 +227,174 @@ describe("two windows", () => {
     const until = Date.now() + 2_000;
     while (second.orchestrator.isReadOnly && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
     expect(second.orchestrator.isReadOnly).toBe(false);
+  });
+});
+
+describe("parked tasks (D-076)", () => {
+  it("parks a disallowed hand edit, reports it as an error, and starts nothing", async () => {
+    writeTask("T-1", "in-implementation", [], [recorded("draft", "ready")]);
+    const { orchestrator, notes } = await start();
+    await orchestrator.runPass();
+    expect(read("tasks/T-1.md")).toMatch(/status: ready → in-implementation · edited by hand, but .*; parked$/m);
+    expect(read("TASKS.md")).toContain("* [[T-1]] Task T-1 · parked (in-implementation)");
+    const diag = lastDiagnostics(notes).files.find((f) => f.path === "tasks/T-1.md")?.diagnostics[0];
+    expect(diag).toMatchObject({ severity: "error", message: expect.stringMatching(/T-1 is parked/) as unknown });
+    expect(lastSnapshot(notes).tasks[0]).toMatchObject({ parked: true, allowed: ["ready", "draft"] });
+  });
+
+  it("unparks when the human moves it back to draft", async () => {
+    writeTask("T-2", "in-implementation", [], ["* 2026-10-23 14:01 · orchestrator · status: review → in-implementation · edited by hand, but x; parked"]);
+    const { orchestrator, notes } = await start();
+    const t2 = () => lastSnapshot(notes).tasks.find((t) => t.id === "T-2");
+    expect(t2()).toMatchObject({ parked: true, allowed: ["ready", "draft"] });
+    await orchestrator.setStatus({ id: "T-2", to: "draft", expectedStatus: "in-implementation", expectedHash: hashOf(read("tasks/T-2.md")) });
+    expect(t2()).toMatchObject({ status: "draft", parked: false });
+  });
+});
+
+describe("running tasks", () => {
+  type Round = (task: { id: string }, abort: AbortController) => Promise<{ summary: string; notes: string[] }>;
+  async function startWith(round: Round, preflight: () => Promise<void> = () => Promise.resolve(), sweep?: () => Promise<void>) {
+    const notes: Notification[] = [];
+    const runner = { preflight, round: (task: Parameters<Round>[0], _text: string, abort: AbortController) => round(task, abort), ...(sweep ? { sweep } : {}) };
+    const orchestrator = new Orchestrator(root, { notify: (n) => notes.push(n), log: () => {}, now: fixedNow, watch: false, runner });
+    running.push(orchestrator);
+    await orchestrator.start();
+    return { orchestrator, notes };
+  }
+  const settle = async (o: Orchestrator, check: () => boolean) => {
+    const until = Date.now() + 3_000;
+    while (!check() && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 20));
+      await o.runPass();
+    }
+  };
+
+  it("takes a ready task through in-implementation to review, with the summary and notes", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    const { orchestrator } = await startWith(() => Promise.resolve({ summary: "Added hello.js\nmore", notes: ["The implementer made no tests."] }));
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("status: review"));
+    const text = read("tasks/T-1.md");
+    expect(text).toContain("status: ready → in-implementation · started");
+    expect(text).toContain("status: in-implementation → review · implementer finished: Added hello.js");
+    expect(text).toContain("· orchestrator · The implementer made no tests.");
+  });
+
+  it("sends a blocked task to needs-human with the reason", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    const { orchestrator } = await startWith(() => Promise.reject(new TaskBlocked("the repository is missing Dockerfile")));
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("needs-human"));
+    expect(read("tasks/T-1.md")).toContain("status: in-implementation → needs-human · can't run: the repository is missing Dockerfile");
+  });
+
+  it("leaves the task alone when Docker or the token isn't available", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    const before = read("tasks/T-1.md");
+    let rounds = 0;
+    const { orchestrator } = await startWith(
+      () => {
+        rounds++;
+        return Promise.resolve({ summary: "x", notes: [] });
+      },
+      () => Promise.reject(new Error("Docker isn't running")),
+    );
+    await orchestrator.runPass();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(read("tasks/T-1.md")).toBe(before);
+    expect(rounds).toBe(0);
+  });
+
+  // A round that runs until it is aborted, then cleans up for `cleanupMs`.
+  const untilAborted = (started: () => void, cleanupMs = 0): Round => (_task, abort) =>
+    new Promise((_resolve, reject) => {
+      started();
+      abort.signal.addEventListener("abort", () => setTimeout(() => reject(new Error("aborted")), cleanupMs));
+    });
+
+  it("stops a running task when the human moves it, and leaves the status they set", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    let started = false;
+    const { orchestrator } = await startWith(untilAborted(() => (started = true)));
+    await settle(orchestrator, () => started);
+    expect(read("tasks/T-1.md")).toContain("* status: in-implementation");
+    fs.writeFileSync(path.join(root, "tasks", "T-1.md"), read("tasks/T-1.md").replace("* status: in-implementation", "* status: draft"));
+    await orchestrator.runPass();
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("parked"));
+    await new Promise((r) => setTimeout(r, 50));
+    const text = read("tasks/T-1.md");
+    expect(text).toContain("* status: draft");
+    expect(text).not.toContain("needs-human");
+  });
+
+  it("keeps the task in-implementation when Claude rejects the token", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    let rounds = 0;
+    const { orchestrator } = await startWith(() => {
+      rounds++;
+      return Promise.reject(new TokenRejected("Claude rejected the token: 401"));
+    });
+    await settle(orchestrator, () => rounds > 0);
+    await new Promise((r) => setTimeout(r, 50));
+    await orchestrator.runPass();
+    const text = read("tasks/T-1.md");
+    expect(text).toContain("* status: in-implementation");
+    expect(text).not.toContain("needs-human");
+    expect(rounds).toBe(1);
+  });
+
+  it("stops leftover projects before starting any task", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    const order: string[] = [];
+    let finishSweep!: () => void;
+    const { orchestrator } = await startWith(
+      () => {
+        order.push("round");
+        return Promise.resolve({ summary: "x", notes: [] });
+      },
+      undefined,
+      () => {
+        order.push("sweep");
+        return new Promise<void>((r) => (finishSweep = r));
+      },
+    );
+    await orchestrator.runPass();
+    expect(order).toEqual(["sweep"]);
+    finishSweep();
+    await settle(orchestrator, () => order.includes("round"));
+    expect(order).toEqual(["sweep", "round"]);
+  });
+
+  it("waits for running tasks to clean up on shutdown, but not forever", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    let started = false;
+    const { orchestrator } = await startWith(untilAborted(() => (started = true), 100));
+    await settle(orchestrator, () => started);
+    const before = Date.now();
+    await orchestrator.shutdown(5_000);
+    const waited = Date.now() - before;
+    expect(waited).toBeGreaterThanOrEqual(90);
+    expect(waited).toBeLessThan(2_000);
+    expect(read("tasks/T-1.md")).toContain("* status: in-implementation");
+
+    writeTask("T-2", "ready", [], [recorded("draft", "ready")]);
+    let started2 = false;
+    const second = await startWith(untilAborted(() => (started2 = true), 60_000));
+    await settle(second.orchestrator, () => started2);
+    const t = Date.now();
+    await second.orchestrator.shutdown(100);
+    expect(Date.now() - t).toBeLessThan(1_000);
+  });
+
+  it("never starts a draft or a parked task", async () => {
+    writeTask("T-1", "draft");
+    writeTask("T-2", "ready", [], ["* 2026-10-23 14:01 · orchestrator · status: draft → ready · edited by hand, but x; parked"]);
+    let rounds = 0;
+    const { orchestrator } = await startWith(() => {
+      rounds++;
+      return Promise.resolve({ summary: "x", notes: [] });
+    });
+    await orchestrator.runPass();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(rounds).toBe(0);
   });
 });

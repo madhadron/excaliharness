@@ -43,6 +43,8 @@ export interface StatusEntry {
   from: string;
   to: string;
   line: number;
+  // The orchestrator parked the task with this entry (D-076).
+  parked?: boolean;
 }
 
 export interface Task {

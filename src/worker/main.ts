@@ -1,27 +1,98 @@
 // Orchestrator worker entry point, started by the extension with fork(), with
-// the repo root and the base agent image's Dockerfile as arguments.
+// the repo root, the base agent image's Dockerfile, the state folder and the
+// parallel-task limit as arguments.
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { BaseImage } from "./agentImage";
 import { DockerClient, DockerUnavailable, findSocket } from "./docker";
 import { Orchestrator } from "./orchestrator";
 import { dispatch, type Notification, type Response } from "./protocol";
+import { run } from "./runner/exec";
+import { TaskRunner } from "./runner/runner";
 import { SignInService } from "./signIn";
 
 const root = process.argv[2];
 const dockerfile = process.argv[3];
-if (!process.send || !root || !fs.existsSync(root) || !dockerfile) {
-  console.error("usage: worker.js <repo root> <agent Dockerfile>, started by the extension with an IPC channel");
+// The extension's per-workspace storage: generated Compose files, sessions,
+// capability results. Outside the repository (D-059).
+const stateDir = process.argv[4];
+// Given at start so the first pass already uses it; settings/update changes it.
+const maxParallelTasks = Number(process.argv[5] ?? "2");
+if (!process.send || !root || !fs.existsSync(root) || !dockerfile || !stateDir) {
+  console.error("usage: worker.js <repo root> <agent Dockerfile> <state dir> [max parallel tasks], started by the extension with an IPC channel");
   process.exit(1);
 }
 
 // A send error means the extension is gone; exit as on disconnect.
+// While shutting down, a failed send is expected and mustn't cut the wait
+// for tasks to clean up short.
+let shuttingDown = false;
 const send = (message: Response | Notification) =>
   process.send?.(message, (error: Error | null) => {
-    if (error) process.exit(0);
+    if (error && !shuttingDown) process.exit(0);
   });
 
 const log = (line: string) => console.log(line);
-const orchestrator = new Orchestrator(root, { notify: send, log });
+
+// The token, held in memory only (D-050). Without one, the extension is asked
+// to sign in, at most once every 10 minutes unless a token arrives.
+let token: string | undefined;
+const waiting = new Set<(t: string) => void>();
+let askedAt = 0;
+const SIGN_IN_WAIT_MS = 15 * 60_000;
+const getToken = (): Promise<string> => {
+  if (token) return Promise.resolve(token);
+  return new Promise((resolve, reject) => {
+    waiting.add(resolve);
+    if (Date.now() - askedAt > 10 * 60_000) {
+      askedAt = Date.now();
+      send({ method: "auth/required", params: {} });
+    }
+    setTimeout(() => {
+      waiting.delete(resolve);
+      reject(new Error("not signed in to Claude"));
+    }, SIGN_IN_WAIT_MS).unref();
+  });
+};
+// Claude rejected the token (expired or revoked): forget it and ask for a
+// new sign-in straight away (D-079).
+// Only if it is still the current token: another round may have failed with
+// an old one after a new sign-in.
+const tokenRejected = (rejected: string) => {
+  if (token !== rejected) return;
+  token = undefined;
+  askedAt = 0;
+};
+
+const socket = findSocket();
+const runnerDocker = socket ? new DockerClient(socket) : undefined;
+const workerDir = path.dirname(process.argv[1] ?? "");
+const runner =
+  socket && runnerDocker
+    ? new TaskRunner({
+        root,
+        stateDir,
+        socket,
+        docker: runnerDocker,
+        run,
+        baseImage: new BaseImage(dockerfile, runnerDocker, socket, log, undefined, { idFile: path.join(stateDir, "images", "agent-base.json") }),
+        proxyImage: new BaseImage(path.join(path.dirname(dockerfile), "proxy", "Dockerfile"), runnerDocker, socket, log, undefined, {
+          name: "excaliharness-egress-proxy",
+          contextFiles: { "proxy.js": path.join(workerDir, "proxy.js") },
+          idFile: path.join(stateDir, "images", "egress-proxy.json"),
+        }),
+        token: getToken,
+        tokenRejected,
+        log,
+      })
+    : undefined;
+if (!runner) log("no Docker socket found; tasks won't run until the window is reloaded with Docker running");
+const orchestrator = new Orchestrator(root, {
+  notify: send,
+  log,
+  ...(runner ? { runner } : {}),
+  ...(Number.isInteger(maxParallelTasks) && maxParallelTasks >= 1 ? { maxParallelTasks } : {}),
+});
 
 // Docker is looked up afresh for each sign-in, so starting Docker after the
 // extension just works. `signIn` is the service of the current (or last) one.
@@ -35,7 +106,7 @@ const startSignIn = (): Promise<{ token: string }> => {
   const docker = new DockerClient(socket);
   let image = images.get(socket);
   if (!image) {
-    image = new BaseImage(dockerfile, docker, socket, log);
+    image = new BaseImage(dockerfile, docker, socket, log, undefined, { idFile: path.join(stateDir, "images", "agent-base.json") });
     images.set(socket, image);
   }
   signIn = new SignInService({ docker, image, notify: send, log });
@@ -53,14 +124,25 @@ process.on("message", (message: unknown) => {
       return signIn.submitCode(attempt, code);
     },
     "auth/cancel": (params) => signIn?.cancel(params?.attempt),
+    "auth/setToken": ({ token: next }) => {
+      token = next;
+      for (const resolve of waiting) resolve(next);
+      waiting.clear();
+    },
+    "settings/update": ({ maxParallelTasks }) => orchestrator.setMaxParallelTasks(maxParallelTasks),
   }).then((response) => response && send(response));
 });
 
-// Removes sign-in containers (they may hold the token) before exiting, but
-// never waits more than a few seconds.
+// Stops running tasks and waits for them to stop their containers, and
+// removes sign-in containers (they may hold the token), then exits; never
+// waits more than SHUTDOWN_MS (D-079).
+// Longer than an aborted command's grace period plus a `compose down`.
+const SHUTDOWN_MS = 30_000;
 const shutdown = () => {
-  orchestrator.stop();
-  void (signIn?.shutdown() ?? Promise.resolve()).finally(() => process.exit(0));
+  if (shuttingDown) return;
+  shuttingDown = true;
+  setTimeout(() => process.exit(0), SHUTDOWN_MS + 1_000).unref();
+  void Promise.allSettled([orchestrator.shutdown(SHUTDOWN_MS), signIn?.shutdown() ?? Promise.resolve()]).finally(() => process.exit(0));
 };
 // The extension went away (window closed or extension host crashed).
 process.on("disconnect", shutdown);

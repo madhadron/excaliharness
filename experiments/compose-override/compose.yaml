@@ -1,0 +1,15 @@
+# Stand-in for a target repo's Compose file (E-007).
+services:
+  dev:
+    build: .
+    volumes: [".:/app"]
+    env_file: [".env.example"]
+  db:
+    image: node:22-slim
+    command: ["node", "-e", "require('http').createServer((q,r)=>r.end('db ok')).listen(5432)"]
+  cache:
+    image: node:22-slim
+    command: ["node", "-e", "require('http').createServer((q,r)=>r.end('cache ok')).listen(6379)"]
+    networks: [backend]
+networks:
+  backend: {}

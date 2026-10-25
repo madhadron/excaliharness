@@ -8,3 +8,4 @@ experiments/*/runs/
 # Local Claude Code session state
 .claude/*.lock
 .claude/settings.local.json
+experiments/runner-smoke/work/

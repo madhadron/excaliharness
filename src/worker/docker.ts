@@ -85,6 +85,13 @@ export class DockerClient {
     await this.request("GET", "/_ping");
   }
 
+  // The Engine's version, e.g. "27.3.1".
+  async version(): Promise<string> {
+    const result = await this.request("GET", "/version");
+    const version = (JSON.parse(result.body.toString("utf8")) as { Version?: unknown }).Version;
+    return typeof version === "string" ? version : "";
+  }
+
   // Undefined if there is no such image.
   async inspectImage(ref: string): Promise<ImageInfo | undefined> {
     const result = await this.request("GET", `/images/${encodeURIComponent(ref)}/json`, undefined, [404]);

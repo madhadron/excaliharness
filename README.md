@@ -55,8 +55,14 @@ infrastructure is all containers, so the host needs only Docker and VS Code.
         * `store.ts`, `watch.ts`, `lock.ts`, `git.ts`: safe writes, file
           watching, the one-window-per-repo lock, reading git state
         * `docker.ts`, `agentImage.ts`, `signIn.ts`: the Docker Engine client,
-          building the base agent image, and Claude sign-in
-        * `tasks/`: the task file model, parser, edits, status rules and index
+          building the images the extension ships, and Claude sign-in
+        * `runner/`: running tasks: the scheduler, the task runner, the
+          Compose override, images, the capability check, worktrees (kept in
+          the extension's storage), prompts and the agent session
+        * `proxy/`: the egress proxy that holds the token
+        * `agents/`: reading agent definitions
+        * `tasks/`: the task file model, parser, edits, status rules, index
+          and the README Quick reference
 * Unit tests: `*.test.ts` next to the code they test (for example
   `src/worker/protocol.test.ts`), run by Vitest without VS Code
 * VS Code integration tests: `src/test/`, run by `@vscode/test-cli` in a real,
@@ -76,7 +82,8 @@ infrastructure is all containers, so the host needs only Docker and VS Code.
     * `Dockerfile`, `docker-compose.yml`: the dev container
     * `agent-image/`: the extension's base agent image, used for sign-in and
       for infrastructure tasks before a target repo has a dev image; other
-      tasks run in an image derived from the target's own dev image (D-024)
+      tasks run in an image derived from the target's own dev image (D-024).
+      `agent-image/proxy/` is the egress proxy's image (D-066)
     * `Makefile`: the commands in the Quick reference
     * `package.json`, `package-lock.json`: dependencies and npm scripts
     * `esbuild.mjs`, `tsconfig.json`, `eslint.config.mjs`, `vitest.config.mts`,

@@ -61,4 +61,18 @@ suite("task files", () => {
     await waitFor(() => ext.snapshot()?.tasks.find((t) => t.id === "T-001" && t.status === "ready"), "the new snapshot");
     assert.equal(ext.snapshot()?.tasks.find((t) => t.id === "T-002")?.status, "draft");
   });
+
+  test("a parked task shows an error and offers Mark ready and Back to draft (D-076)", async () => {
+    await api();
+    const uri = vscode.Uri.file(file("tasks/T-003.md"));
+    await vscode.window.showTextDocument(uri);
+    const diagnostic = await waitFor(() => vscode.languages.getDiagnostics(uri).find((d) => d.message.includes("is parked")), "the parked diagnostic");
+    assert.equal(diagnostic.severity, vscode.DiagnosticSeverity.Error);
+    const titles = await waitFor(async () => {
+      const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", uri);
+      const found = lenses.map((l) => l.command?.title ?? "");
+      return found.length ? found : undefined;
+    }, "the parked task's CodeLens");
+    assert.deepEqual(titles, ["Mark ready", "Back to draft"]);
+  });
 });

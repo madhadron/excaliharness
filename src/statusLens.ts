@@ -5,8 +5,8 @@ import * as vscode from "vscode";
 import { statusOf, taskIdOf } from "./editorText";
 import type { TaskState } from "./taskState";
 
-export const LENS_TITLES = { ready: "Mark ready", done: "Mark done" } as const;
-export const COMMANDS = { ready: "excaliharness.markReady", done: "excaliharness.markDone" } as const;
+export const LENS_TITLES = { ready: "Mark ready", done: "Mark done", draft: "Back to draft" } as const;
+export const COMMANDS = { ready: "excaliharness.markReady", done: "excaliharness.markDone", draft: "excaliharness.backToDraft" } as const;
 
 export class StatusLensProvider implements vscode.CodeLensProvider, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>();

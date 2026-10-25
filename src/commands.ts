@@ -16,6 +16,7 @@ export const RESTART_COMMAND = "excaliharness.restartWorker";
 const SET_STATUS_TIMEOUT_MS = 15_000;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const verb = (to: HumanStatus) => (to === "draft" ? "move it back to draft" : `mark it ${to}`);
 
 export function registerCommands(root: string, worker: WorkerClient, state: TaskState): vscode.Disposable[] {
   const mark = async (to: HumanStatus, arg?: { id?: unknown }) => {
@@ -25,7 +26,7 @@ export function registerCommands(root: string, worker: WorkerClient, state: Task
       : vscode.window.activeTextEditor?.document.uri.fsPath;
     const taskId = file ? taskIdOf(root, file) : undefined;
     if (!file || !taskId) {
-      void vscode.window.showWarningMessage(`Open a task file (tasks/T-NNN.md) to mark it ${to}.`);
+      void vscode.window.showWarningMessage(`Open a task file (tasks/T-NNN.md) to ${verb(to)}.`);
       return;
     }
     if (state.readOnly) {
@@ -34,11 +35,12 @@ export function registerCommands(root: string, worker: WorkerClient, state: Task
     }
     const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === file);
     if (document?.isDirty) {
-      const save = `Save and mark ${to}`;
+      // Keeps D-045's wording: "Save and mark ready".
+      const save = `Save and ${to === "draft" ? "move back to draft" : `mark ${to}`}`;
       const choice = await vscode.window.showWarningMessage(`${taskId} has unsaved changes.`, save);
       if (choice !== save) return;
       if (!(await document.save())) {
-        void vscode.window.showErrorMessage(`Couldn't save ${taskId}, so it wasn't marked ${to}.`);
+        void vscode.window.showErrorMessage(`Couldn't save ${taskId}, so it wasn't changed.`);
         return;
       }
     }
@@ -47,7 +49,7 @@ export function registerCommands(root: string, worker: WorkerClient, state: Task
       const bytes = await fs.readFile(file);
       const status = statusOf(bytes.toString("utf8"), taskId)?.value;
       if (!status || !isStatus(status)) {
-        void vscode.window.showErrorMessage(`${taskId} doesn't parse (see the Problems panel), so it can't be marked ${to}.`);
+        void vscode.window.showErrorMessage(`${taskId} doesn't parse (see the Problems panel), so it can't be changed.`);
         return;
       }
       await worker.request(
@@ -56,13 +58,14 @@ export function registerCommands(root: string, worker: WorkerClient, state: Task
         SET_STATUS_TIMEOUT_MS,
       );
     } catch (error) {
-      void vscode.window.showErrorMessage(`Couldn't mark ${taskId} ${to}: ${message(error)}.`);
+      void vscode.window.showErrorMessage(`Couldn't ${verb(to)} ${taskId}: ${message(error)}.`);
     }
   };
 
   return [
     vscode.commands.registerCommand(COMMANDS.ready, (arg?: { id?: unknown }) => mark("ready", arg)),
     vscode.commands.registerCommand(COMMANDS.done, (arg?: { id?: unknown }) => mark("done", arg)),
+    vscode.commands.registerCommand(COMMANDS.draft, (arg?: { id?: unknown }) => mark("draft", arg)),
     vscode.commands.registerCommand(RESTART_COMMAND, () => worker.restart()),
   ];
 }

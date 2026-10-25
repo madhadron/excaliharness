@@ -11,8 +11,20 @@ import { editTask, replaceIndex, type TaskEdit } from "./tasks/edit";
 import { indexLines, type IndexEntry } from "./tasks/index";
 import type { Diagnostic, Status, Task } from "./tasks/model";
 import { parseTask, parseTasksIndex } from "./tasks/parse";
-import { allowedHumanStatuses, decide, humanChangeRefusal, isAllowedHumanChange, recordedStatus, type Change } from "./tasks/transitions";
+import {
+  allowedHumanStatuses,
+  decide,
+  humanChangeRefusal,
+  isAllowedHumanChange,
+  isParked,
+  recordedStatus,
+  wasParked,
+  type Change,
+} from "./tasks/transitions";
 import { gitDir, resolveHead } from "./git";
+import { TaskBlocked, TokenRejected, type RoundResult } from "./runner/runner";
+import { printableLine } from "./runner/clean";
+import { Scheduler } from "./runner/scheduler";
 import { TaskWatcher, type WatchOptions } from "./watch";
 
 const TASK_FILE = /^(T-\d+)\.md$/;
@@ -30,7 +42,21 @@ export interface OrchestratorOptions {
   heartbeatMs?: number;
   gitRetryMs?: number;
   maxRounds?: number;
+  // Runs tasks (the agent runner); without it, tasks are only tracked.
+  runner?: TaskRunnerLike;
+  maxParallelTasks?: number;
 }
+
+export interface TaskRunnerLike {
+  preflight(): Promise<void>;
+  // Stops containers left over from an earlier worker, before any task runs.
+  sweep?(): Promise<void>;
+  round(task: Task, text: string, abort: AbortController): Promise<RoundResult>;
+}
+
+// How long to wait before trying again when a task couldn't start (Docker
+// not running, not signed in), so the human isn't asked over and over.
+const PREFLIGHT_BACKOFF_MS = 60_000;
 
 interface ScannedTask {
   task: Task;
@@ -68,6 +94,15 @@ export class Orchestrator {
   // Problems found while writing, shown with the next snapshot.
   private readonly writeProblems = new Map<string, Diagnostic[]>();
   private readonly store = new Store();
+  private readonly scheduler: Scheduler | undefined;
+  private preflightBlockedUntil = 0;
+  private preflightTimer: NodeJS.Timeout | undefined;
+  // Tasks whose last run ended without changing their status, and when they
+  // may be launched again (so a failing write can't relaunch every 2 s).
+  private readonly retryAt = new Map<string, number>();
+  // Leftover projects are stopped once, before the first task starts.
+  private sweep: "pending" | "running" | "done";
+  private sweepTimer: NodeJS.Timeout | undefined;
   private readonly now: () => Date;
   private readonly maxRounds: number;
   private lastSnapshot: TasksSnapshot = { version: 0, readOnly: true, tasks: [] };
@@ -78,6 +113,18 @@ export class Orchestrator {
   ) {
     this.now = options.now ?? (() => new Date());
     this.maxRounds = options.maxRounds ?? 5;
+    this.sweep = options.runner?.sweep ? "pending" : "done";
+    if (options.runner) {
+      const runner = options.runner;
+      this.scheduler = new Scheduler(
+        (id, abort) => this.runTask(runner, id, abort),
+        options.maxParallelTasks ?? 2,
+        options.log,
+        // Not straight away: a task that returned without starting would
+        // otherwise be relaunched in a tight loop.
+        () => this.schedulePassSoon(),
+      );
+    }
   }
 
   get isReadOnly(): boolean {
@@ -101,14 +148,127 @@ export class Orchestrator {
   }
 
   stop(): void {
+    this.halt();
+    // Nothing is written once the lock is gone.
+    this.readOnly = true;
+    this.releaseLock?.();
+    this.releaseLock = undefined;
+  }
+
+  // Stops scanning, watching and running tasks, but keeps the lock.
+  private halt(): void {
     this.stopped = true;
+    this.scheduler?.stopAll();
     this.watcher?.close();
     if (this.lockTimer) clearInterval(this.lockTimer);
     if (this.gitTimer) clearTimeout(this.gitTimer);
     if (this.soonTimer) clearTimeout(this.soonTimer);
     if (this.heartbeat) clearInterval(this.heartbeat);
-    this.releaseLock?.();
-    this.releaseLock = undefined;
+    if (this.preflightTimer) clearTimeout(this.preflightTimer);
+    if (this.sweepTimer) clearTimeout(this.sweepTimer);
+  }
+
+  // Stops, then waits up to `timeoutMs` for running tasks to clean up (stop
+  // their containers), so closing the window doesn't leave them running.
+  // The lock is kept until then, so another window can't start the same
+  // tasks while these are still stopping.
+  async shutdown(timeoutMs: number): Promise<void> {
+    this.halt();
+    if (this.scheduler) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([this.scheduler.idle(), new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)))]);
+      clearTimeout(timer);
+    }
+    this.stop();
+  }
+
+  setMaxParallelTasks(limit: number): void {
+    this.scheduler?.setLimit(limit);
+    this.schedulePass();
+  }
+
+  // Changes a task's status as the orchestrator, if it is still `from`.
+  // Returns false if it isn't (someone changed it meanwhile).
+  transition(id: string, from: Status, to: Status, reason: string, notes: string[] = []): Promise<boolean> {
+    return this.enqueue(() => {
+      if (this.readOnly) return false;
+      const clean = (s: string) => printableLine(s).slice(0, 500);
+      const updates = [this.entry("orchestrator", `status: ${from} → ${to} · ${clean(reason)}`), ...notes.map((n) => this.entry("orchestrator", clean(n)))];
+      let wrote = false;
+      const result = this.store.update(this.taskPath(id), (text) => {
+        const parsed = parseTask(text, id);
+        if (!parsed.ok || parsed.value.status !== from) return undefined;
+        wrote = true;
+        return editTask(text, parsed.value.statusLine, { status: to, updates });
+      });
+      if (result.status === "failed") this.writeFailed(`tasks/${id}.md`, result.reason);
+      this.pass();
+      return wrote && result.status === "written";
+    });
+  }
+
+  // One task through the runner (unit A: one implementer round, then review).
+  private async runTask(runner: TaskRunnerLike, id: string, abort: AbortController): Promise<void> {
+    if (Date.now() < this.preflightBlockedUntil) return;
+    try {
+      await runner.preflight();
+    } catch (error) {
+      // Nothing changes on the task: it starts once Docker and a token are
+      // there. No task is launched until the backoff ends, then one pass
+      // tries again (launching in a loop would spin the CPU).
+      this.preflightBlockedUntil = Date.now() + PREFLIGHT_BACKOFF_MS;
+      this.options.log(`not starting ${id} yet: ${error instanceof Error ? error.message : String(error)}`);
+      if (!this.preflightTimer) {
+        this.preflightTimer = setTimeout(() => {
+          this.preflightTimer = undefined;
+          this.schedulePass();
+        }, PREFLIGHT_BACKOFF_MS);
+        this.preflightTimer.unref();
+      }
+      return;
+    }
+    if (abort.signal.aborted) return;
+    const read = () => {
+      const r = readFile(this.taskPath(id));
+      if (r.status !== "ok") return undefined;
+      const parsed = parseTask(r.content.text, id);
+      return parsed.ok ? { task: parsed.value, text: r.content.text } : undefined;
+    };
+    // Unless the status changes below, the task waits before its next launch.
+    this.retryAt.set(id, Date.now() + PREFLIGHT_BACKOFF_MS);
+    let current = read();
+    if (!current || this.isParked(current.task)) return;
+    if (current.task.status === "ready") {
+      if (!(await this.transition(id, "ready", "in-implementation", "started"))) return;
+      current = read();
+      if (!current) return;
+    } else if (current.task.status !== "in-implementation") return;
+    let moved: boolean;
+    try {
+      const result = await runner.round(current.task, current.text, abort);
+      const first = result.summary.split("\n")[0] ?? "";
+      moved = await this.transition(id, "in-implementation", "review", `implementer finished: ${first}`, result.notes);
+    } catch (error) {
+      // Stopped (window closed): leave it in-implementation to resume later.
+      // Aborted because the human changed its status: leave it as they set it.
+      if (abort.signal.aborted) return;
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof TokenRejected) {
+        // Not the task's fault: it resumes after the next sign-in.
+        this.options.log(`${id}: ${message}`);
+        this.preflightBlockedUntil = Date.now() + PREFLIGHT_BACKOFF_MS;
+        return;
+      }
+      const reason = error instanceof TaskBlocked ? `can't run: ${message}` : `failed: ${message}`;
+      moved = await this.transition(id, "in-implementation", "needs-human", reason);
+    }
+    if (moved) this.retryAt.delete(id);
+  }
+
+  // Parked, as decide() sees it: a status accepted from a git checkout is
+  // never parked (D-076).
+  private isParked(task: Task): boolean {
+    return isParked(task, this.accepted);
   }
 
   list(): Promise<TasksSnapshot> {
@@ -134,11 +294,12 @@ export class Orchestrator {
       if (!parsed.ok) throw new Error(`${params.id}.md doesn't parse; fix the problems shown for it first`);
       const task = parsed.value;
       if (task.status !== params.expectedStatus) throw new Error(`${params.id} is ${task.status}, not ${params.expectedStatus}`);
-      if (!isAllowedHumanChange(task.status, params.to)) throw new Error(humanChangeRefusal(task.status, params.to));
+      const parked = this.isParked(task);
+      if (!isAllowedHumanChange(task.status, params.to, parked)) throw new Error(humanChangeRefusal(task.status, params.to));
 
       const updates: string[] = [];
       const baseline = this.accepted.get(task.id) ?? recordedStatus(task);
-      if (baseline !== task.status) updates.push(this.handEditLine(baseline, task.status));
+      if (baseline !== task.status) updates.push(this.handEditLine(baseline, task.status, isAllowedHumanChange(baseline, task.status, wasParked(task, this.accepted))));
       updates.push(this.entry("human", `status: ${task.status} → ${params.to}`));
       let changedUnderneath = false;
       const result = this.store.update(file, (text) => {
@@ -151,6 +312,7 @@ export class Orchestrator {
       if (changedUnderneath) throw new Error(`${params.id}.md changed while marking it; try again`);
       if (result.status === "failed") throw new Error(`couldn't write ${params.id}.md: ${result.reason}`);
       this.accepted.delete(task.id);
+      this.retryAt.delete(task.id);
       // The change is written; a failure in the follow-up pass mustn't turn
       // it into an error for the user.
       try {
@@ -226,6 +388,8 @@ export class Orchestrator {
       return;
     }
     const wasWriting = !this.readOnly;
+    // Another worker may take over our tasks now; ours must stop first.
+    if (wasWriting) this.scheduler?.abortAll("lost the orchestrator lock");
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = undefined;
     this.readOnly = true;
@@ -413,11 +577,10 @@ export class Orchestrator {
       const edit = edits.get(change.id) ?? { updates: [] };
       if (change.type === "hand-edit") {
         edit.updates.push(
-          change.allowed
-            ? this.entry("human", `status: ${change.from} → ${change.to}`)
-            : this.handEditLine(change.from, change.to),
+          this.handEditLine(change.from, change.to, change.allowed),
         );
         this.accepted.delete(change.id);
+        this.retryAt.delete(change.id);
       } else {
         edit.status = change.to;
         edit.updates.push(this.entry("orchestrator", `status: ${change.from} → ${change.to} · ${change.reason}`));
@@ -444,7 +607,7 @@ export class Orchestrator {
   private writeIndex(scan: Scan): boolean {
     if (!scan.index?.ok) return false;
     const entries: IndexEntry[] = [
-      ...[...scan.tasks.values()].map(({ task }) => ({ id: task.id, title: task.title, status: task.status })),
+      ...[...scan.tasks.values()].map(({ task }) => ({ id: task.id, title: task.title, status: task.status, parked: this.isParked(task) })),
       ...scan.broken.map(({ id }) => ({ id })),
     ];
     const lines = indexLines(entries);
@@ -484,6 +647,46 @@ export class Orchestrator {
     this.soonTimer.unref();
   }
 
+  // Starts tasks that should be running; only the lock holder runs tasks.
+  private considerRunning(scan: Scan): void {
+    if (this.readOnly || this.stopped || !this.scheduler) return;
+    const tasks = [...scan.tasks.values()].map((s) => s.task);
+    // A running task the human moved elsewhere (or parked) is stopped.
+    for (const id of this.scheduler.runningIds) {
+      const task = scan.tasks.get(id)?.task;
+      if (!task || this.isParked(task) || (task.status !== "ready" && task.status !== "in-implementation")) {
+        this.scheduler.abort(id, "status changed");
+      }
+    }
+    if (this.sweep !== "done") {
+      if (this.sweep === "pending" && !this.sweepTimer && this.options.runner?.sweep) {
+        this.sweep = "running";
+        void this.options.runner
+          .sweep()
+          .then(() => {
+            this.sweep = "done";
+            this.schedulePass();
+          })
+          .catch((error: unknown) => {
+            // Tried again later (Docker may not be running yet); tasks wait.
+            this.options.log(`couldn't stop leftover task projects: ${error instanceof Error ? error.message : String(error)}`);
+            this.sweep = "pending";
+            if (this.stopped) return;
+            this.sweepTimer = setTimeout(() => {
+              this.sweepTimer = undefined;
+              this.schedulePass();
+            }, PREFLIGHT_BACKOFF_MS);
+            this.sweepTimer.unref();
+          });
+      }
+      return;
+    }
+    if (Date.now() < this.preflightBlockedUntil) return;
+    const now = Date.now();
+    for (const [id, at] of this.retryAt) if (at <= now) this.retryAt.delete(id);
+    this.scheduler.consider(tasks.filter((t) => !this.isParked(t) && !this.retryAt.has(t.id)));
+  }
+
   // Sends a snapshot only when something changed, so periodic rescans don't
   // redraw every CodeLens.
   private publish(scan: Scan): void {
@@ -495,24 +698,30 @@ export class Orchestrator {
         status: task.status,
         statusLine: task.statusLine,
         hash,
-        allowed: allowedHumanStatuses(task.status),
+        allowed: allowedHumanStatuses(task.status, this.isParked(task)),
+        parked: this.isParked(task),
       }))
       .sort((a, b) => Number(a.id.slice(2)) - Number(b.id.slice(2)));
     const diagnostics = new Map(scan.diagnostics);
     for (const [rel, extra] of this.writeProblems) diagnostics.set(rel, [...(diagnostics.get(rel) ?? []), ...extra]);
     const files = [...diagnostics].map(([p, d]) => ({ path: p, diagnostics: d }));
     const key = JSON.stringify({ readOnly: this.readOnly, tasks, files });
-    if (key === this.lastPublished) return;
+    if (key === this.lastPublished) {
+      this.considerRunning(scan);
+      return;
+    }
     this.lastPublished = key;
     this.version++;
     this.lastSnapshot = { version: this.version, readOnly: this.readOnly, tasks };
     this.options.notify({ method: "tasks/changed", params: this.lastSnapshot });
+    this.considerRunning(scan);
     this.options.notify({ method: "tasks/diagnostics", params: { version: this.version, files } });
   }
 
-  private handEditLine(from: Status, to: Status): string {
-    if (isAllowedHumanChange(from, to)) return this.entry("human", `status: ${from} → ${to}`);
-    return this.entry("orchestrator", `status: ${from} → ${to} · edited by hand, but ${humanChangeRefusal(from, to)}; left as is`);
+  // A disallowed edit's line ends in "parked", which parks the task (D-076).
+  private handEditLine(from: Status, to: Status, allowed: boolean): string {
+    if (allowed) return this.entry("human", `status: ${from} → ${to}`);
+    return this.entry("orchestrator", `status: ${from} → ${to} · edited by hand, but ${humanChangeRefusal(from, to)}; parked`);
   }
 
   private entry(who: string, text: string): string {

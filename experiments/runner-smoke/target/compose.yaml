@@ -1,0 +1,9 @@
+services:
+  dev:
+    build: .
+    volumes: [".:/app"]
+    ports: ["3000:3000"]
+  db:
+    image: node:22-slim
+    command: ["node", "-e", "require('http').createServer((q,r)=>r.end('db ok')).listen(5432)"]
+    ports: ["5432:5432"]

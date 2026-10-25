@@ -75,6 +75,8 @@ question (see D-011) rather than made unilaterally.
 - Rejected: A shared checkout with tasks run one at a time.
 - Amended 2026-10-23: originally "inside the target project's Docker Compose
   dev container"; D-024 replaced that with the base and derived images.
+- Amended 2026-10-24: containers run through the target's Compose with a
+  generated override (D-059); worktree and branch details in D-069.
 
 ## D-008 Agent definitions: `agents/*.md`, named by pipelines
 - Date: 2026-10-23
@@ -107,6 +109,7 @@ question (see D-011) rather than made unilaterally.
   extension, so it speaks on the host directly.)
 - Rejected: Showing the human the first pass with findings attached; a separate
   host-side notifier process.
+- Amended 2026-10-24: the loop is specified in D-072, notifications in D-077.
 
 ## D-011 Questions and answers in task files
 - Date: 2026-10-23
@@ -253,6 +256,8 @@ question (see D-011) rather than made unilaterally.
   confirmed `setup-token` supports the paste-the-code sign-in this needs.
 - Rejected: API keys (`ANTHROPIC_API_KEY`); a `.env` file; a terminal-only
   flow; a localhost web page; a host pseudo-terminal (`node-pty`).
+- Amended 2026-10-24: agent containers get the token through the egress proxy
+  instead (D-066).
 
 ## D-023 Design principle: every reference is a link
 - Date: 2026-10-23
@@ -407,6 +412,7 @@ question (see D-011) rather than made unilaterally.
   orchestrator never reverts human edits.
 - Reason: Human edits are never fought over, and nothing starts by accident.
 - Rejected: Reverting disallowed changes; allowing any change.
+- Amended 2026-10-24: disallowed hand edits park the task (D-076).
 
 ## D-038 Parse errors are reported as VS Code diagnostics
 - Date: 2026-10-23
@@ -626,3 +632,294 @@ question (see D-011) rather than made unilaterally.
 - Reason: Chosen by the human; a click on "signed in" shouldn't silently start
   a new sign-in.
 - Rejected: Always starting a new sign-in on click.
+
+## D-058 Target repos keep their Dockerfile and Compose file at the root
+- Date: 2026-10-24
+- Decision: The orchestrator looks for `Dockerfile` and one of `compose.yaml`,
+  `compose.yml`, `docker-compose.yaml`, `docker-compose.yml` at the repo root.
+  If either is missing, tasks other than infrastructure tasks can't start, and
+  the human is told which file is missing.
+- Reason: Chosen by the human.
+- Rejected: Searching subdirectories; a setting naming the files.
+
+## D-059 Agents run through the target's Compose with a generated override
+- Date: 2026-10-24
+- Decision: The worker runs the task's services with the target's Compose file
+  from the **main checkout** plus an override it generates outside the repo,
+  built from `docker compose config --format json`. The override locks down
+  the dev service (D-056's hardening, the task worktree as the only mount, no
+  `env_file`, only declared environment variables). If the resolved config
+  gives the dev service anything that can't be safely overridden (privileged,
+  added capabilities or devices, host network/PID/IPC, the Docker socket or host
+  paths outside the repo), the task doesn't start and the human is told why.
+  Other services keep their own settings. Requires Compose 2.24 or later.
+  Revises D-007's "inside the target project's Docker Compose dev container".
+- Reason: Uses the project's own services without inheriting settings an agent
+  must not have.
+- Rejected: Running the target's Compose service as is; ignoring Compose and
+  creating every container through the Engine API.
+
+## D-060 Agent networking
+- Date: 2026-10-24
+- Decision: The override adds `excaliharness-internal-network` (internal: no
+  route out) and `excaliharness-egress-network`. The dev service is only on the
+  internal network; every other service also joins it (found from the resolved
+  config; a service with `network_mode` set is reported). The
+  `excaliharness-egress-proxy` service is on both and is the agent's only way
+  out, forwarding only to Claude's API.
+- Reason: Agents reach the project's services and Claude, and nothing else.
+- Rejected: Docker's default bridge network; short names like `agents`.
+
+## D-061 One Compose project per task; agent containers are labeled
+- Date: 2026-10-24
+- Decision: Each task runs as Compose project `excaliharness-t-nnn` with its own
+  copy of the project's services. Agent containers carry
+  `org.excaliharness.role=agent`.
+- Reason: Tasks don't share state, and our containers are findable.
+- Rejected: One shared set of services for all tasks.
+
+## D-062 Dependencies come from the image; rebuild and resume between rounds
+- Date: 2026-10-24
+- Decision: Agents can't install packages (no registry access). Dependency
+  changes go into the Dockerfile or manifests; between rounds the worker
+  rebuilds and resumes the same agent session in a fresh container from the
+  new image. Infrastructure tasks, which run in the base image, are checked on
+  the host: the worker builds the dev and derived images, runs the capability
+  check and the required gates, and returns failures as findings.
+- Reason: Chosen by the human ("way out 1").
+- Rejected: Dependency changes as separate infrastructure tasks; allowing
+  package registries through the proxy.
+
+## D-063 The dev service is the one built from the root Dockerfile
+- Date: 2026-10-24
+- Decision: The Compose service whose build uses the root `Dockerfile` is the
+  dev environment. None or more than one refuses the start, with a message.
+- Reason: No new convention for repos.
+- Rejected: A fixed service name; a label.
+
+## D-064 A thin derived image adds Claude Code
+- Date: 2026-10-24
+- Decision: `docker compose build` builds the target's dev image as the project
+  defines it; the worker then builds a thin image `FROM` its ID adding the
+  pinned Claude Code native binary (checksum-verified, glibc or musl build to
+  match), git if missing, stripped setuid bits and numeric user 1000. It is
+  labeled with the dev image ID and a hash of the layer's Dockerfile, built
+  with `--pull=false`, and used by ID. The override sets `image: sha256:…`,
+  `build: !reset null` and `pull_policy: never`. Details D-024 left open.
+- Reason: The CLI version stays the extension's, not in files an agent edits,
+  and the native binary needs no Node.
+- Rejected: Requiring the dev image to include Claude Code; the npm package.
+- Amended 2026-10-24: the derived build names its inputs as
+  `excaliharness-pinned:<ID hex>` tags created for the exact image IDs just
+  before building, since BuildKit won't take a bare ID (E-008). Claude Code is
+  the pinned native binary, copied from the base agent image.
+- Amended 2026-10-24: only glibc (Debian or Ubuntu-based) dev images are
+  supported. A musl (Alpine) dev image fails the capability check (D-065)
+  with a message saying so. Rejected: supporting musl.
+
+## D-065 Capability check per image
+- Date: 2026-10-24
+- Decision: Once per derived image ID, a hardened throwaway container checks:
+  the CLI runs, git and a shell exist, the user isn't root, home and
+  `/workspace` are writable, each required-gate program exists, and the proxy
+  is reachable. Each failure is a specific message; the result is cached by
+  image ID.
+- Reason: Problems surface before an agent wastes a round.
+- Rejected: Letting runs fail.
+
+## D-066 Only the egress proxy holds the token
+- Date: 2026-10-24
+- Decision: Agent containers get
+  `ANTHROPIC_BASE_URL=http://excaliharness-egress-proxy:8080` and a placeholder
+  token; the proxy adds the real one and forwards only to Claude's API. The
+  proxy is ours, built and run by ID like the base image. Supersedes D-022's
+  environment variable for agent containers (sign-in and token-check
+  containers keep it). Subject to experiment E-005.
+- Reason: Nothing an agent runs can read the token or send data elsewhere.
+- Rejected: Environment variable; stdin.
+
+## D-067 The agent loop runs in the worker
+- Date: 2026-10-24
+- Decision: The Agent SDK runs in the worker on the host and spawns the CLI
+  through `docker compose run` in the task's project. Subject to experiment
+  E-006.
+- Reason: The orchestrator's tools and state stay out of the agent's reach.
+- Rejected: Running the SDK inside the container.
+
+## D-068 Agents talk to the orchestrator through tools
+- Date: 2026-10-24
+- Decision: The worker gives agents SDK tools: `ask_question` (writes a D-011
+  question to the main task file and sets `needs-decision`),
+  `report_findings` (reviewers), `finish` (round summary). `tasks/`,
+  `TASKS.md`, `agents/` and `docs/decisions.md` are mounted read-only over the
+  worktree.
+- Reason: Agents can't forge status history; the worker stays the only writer.
+- Rejected: Agents editing task files directly.
+
+## D-069 Git stays on the host
+- Date: 2026-10-24
+- Decision: Each task has worktree `.worktrees/T-NNN` on branch `task/T-NNN`,
+  started from `main`'s current commit. Containers get no `.git`. The worker
+  commits after each round on the host with hooks, fsmonitor and system config
+  disabled, authored "Excaliharness (<agent role>)". Round prompts include the
+  diff so far.
+- Reason: Removes the highest-severity roadmap risk; agents don't need git to
+  edit.
+- Rejected: Giving agents a repository; returning patches.
+- Amended 2026-10-24: worktrees live at `.excaliharness/worktrees/T-NNN`,
+  inside the cache directory that ignores itself, so the target's `.gitignore`
+  is never touched. Rejected: `.worktrees/T-NNN`.
+
+## D-070 Rebuild between every round
+- Date: 2026-10-24
+- Decision: Between rounds the worker always runs `docker compose build` and
+  the derived build; Docker's cache makes this a no-op when nothing changed.
+- Reason: Catches every kind of change with nothing to maintain.
+- Rejected: A list of files that trigger a rebuild.
+
+## D-071 Agent sessions persist per task
+- Date: 2026-10-24
+- Decision: Volume `excaliharness-t-nnn-session` is mounted as the agent's
+  `~/.claude`, so each round resumes the same session.
+- Reason: The agent keeps its context across rebuilds (D-062).
+- Rejected: A new session each round with a summary.
+
+## D-072 The gate loop
+- Date: 2026-10-24
+- Decision: A round: implementer turn, commit, the README's required gates in a
+  fresh container, then each review agent in its own container with the
+  worktree mounted read-only (Bash allowed for running things; frontmatter may
+  restrict tools further). If a gate fails or anything is reported, the next
+  round gets the failures and findings. Clean means no failures and no
+  findings, nits included. After 3 rounds the task becomes `needs-human` with
+  the open findings in Updates. Makes D-010 concrete.
+- Reason: The human sees work with no nits, lints or failing tests left; a
+  read-only mount is enforced by the kernel, not just by tool settings.
+- Rejected: Fixing only blocking findings; reviewers in the implementer's
+  container with tool restrictions alone.
+
+## D-073 Prompts are built from reviewable files
+- Date: 2026-10-24
+- Decision: System prompt: the agent's `agents/*.md` body (main checkout),
+  `docs/decisions.md`, the README Quick reference, and the task-format rules.
+  User prompt: the task's Context, Issue and Expectation, answered questions,
+  and the previous round's results. Model and tools from the agent's
+  frontmatter.
+- Reason: D-008, D-020; everything agents see is in files the human reviews.
+- Rejected: A fixed built-in prompt.
+
+## D-074 At most two tasks run at once
+- Date: 2026-10-24
+- Decision: Setting `excaliharness.maxParallelTasks`, default 2; waiting tasks
+  start in task-id order.
+- Reason: Caps Docker load and token spend.
+- Rejected: One at a time; no limit.
+
+## D-075 Side effects are named per task and idempotent
+- Date: 2026-10-24
+- Decision: Compose project, worktree, branch and session volume are named
+  after the task. Before starting, the worker removes the project's leftover
+  containers and reuses an existing worktree and branch. A running task is
+  never started twice.
+- Reason: A restart or a reverted save can't create a second agent.
+- Rejected: —
+
+## D-076 Hand edits into orchestrator-managed statuses park the task
+- Date: 2026-10-24
+- Decision: A task hand-edited into a status only the orchestrator sets is
+  parked: no automatic transitions until the human sets `ready`, `done` (if it
+  was in `review`) or `draft`. A parked task gets an error diagnostic on its
+  status line ("T-007 is parked: its status was set by hand to …, which only
+  the orchestrator sets. Mark it ready, done or draft to continue."), its index
+  line reads `· parked (<status>)`, and the CodeLens offers "Mark ready",
+  "Back to draft" and, if it was in review, "Mark done". "Back to draft" is a
+  human change allowed only for parked tasks. Amends D-037.
+- Reason: Prevents accidental starts and makes the state visible (D-041).
+- Rejected: Noting the edit and acting on the new status later.
+
+## D-077 Notifications when work is ready
+- Date: 2026-10-24
+- Decision: On `review` or `needs-human`, a VS Code notification ("Task T-007
+  is ready for review" / "Task T-007 needs you") with "Open review", which
+  opens the task's worktree folder until the review UI exists, plus macOS
+  `say`. Implements D-010's notification.
+- Reason: D-010.
+- Rejected: Notifications without speech.
+
+## D-078 Pipelines must name existing agents
+- Date: 2026-10-24
+- Decision: A pipeline naming an `agents/*.md` that doesn't exist is a
+  diagnostic and the task doesn't start. No built-in default agents.
+- Reason: Agents stay explicit and reviewable; a command to create defaults can
+  come later.
+- Rejected: Shipping default agents.
+
+## D-079 Fixes from the unit A reviews
+- Date: 2026-10-24
+- Decision: Amendments and additions from the three D-019 reviews of the agent
+  runner:
+  - D-061 amended: projects are named `excaliharness-<repo hash>-t-nnn`
+    (the first 8 hex digits of the SHA-256 of the repository's path), so two
+    windows on different repositories never share a project. At start-up the
+    worker stops leftover projects with its own prefix.
+  - D-071 amended: the session volume is named
+    `excaliharness-<repo hash>-t-nnn-session`, and the images create
+    `/home/agent/.claude` owned by uid 1000 so a new volume is writable.
+  - D-069 amended: worktrees live in the extension's per-workspace storage,
+    `<stateDir>/worktrees/T-NNN`, outside the repository, so builds and the
+    editor never pick them up. Every host git call names the worktree's git
+    directory and work tree itself, so a `.git` file the agent rewrote is
+    never read; the container's `/workspace/.git` is an empty read-only file.
+    Changes under the read-only paths (D-068) are never committed.
+  - D-073 amended: the system prompt is Claude Code's own (fixed by the pinned
+    CLI version) with ours appended.
+  - D-059 extended: the dev service is also refused for any `network_mode`,
+    `cgroup`/`uts: host`, or `pid`/`ipc` naming another container; any service
+    whose image is named `excaliharness-*` is refused. The agent's environment
+    replaces the dev service's, and Compose gets only `PATH`, `HOME`,
+    `DOCKER_CONFIG` and `TMPDIR` from the worker's environment, plus
+    `DOCKER_HOST`. Services are started with
+    `--no-deps`; other services with `build:` are built too.
+  - D-060 amended: other services keep their own networks. Accepted risk: an
+    agent can use them to reach the internet.
+  - D-066 extended: the proxy forwards only `POST /v1/messages` and
+    `/v1/messages/count_tokens`, and refuses bodies with `mcp_servers`,
+    `container` or non-custom tools, and betas for MCP, code execution,
+    Files, web fetch or computer use.
+  - An agent file without `tools:` is an error; the task doesn't start.
+  - A round stops after 60 minutes or 100 turns and the task goes to
+    `needs-human` with the reason.
+  - When Claude rejects the token, the worker drops it and asks the human to
+    sign in again; the task stays `in-implementation` and resumes.
+  - Tasks need Docker Engine 26.0.0 or later (CVE-2024-29018).
+  - Malicious target repositories are out of scope for now (roadmap).
+- Reason: The reviews' blocking and should-fix findings.
+- Rejected: Internal-only networks for other services; path-only proxy
+  rules; keeping worktrees in `.excaliharness`; inheriting all tools when
+  `tools:` is missing; 200 turns.
+- Amended 2026-10-25, after the second round of reviews:
+  - D-076 amended: any hand edit that isn't allowed parks the task, not only
+    one into an orchestrator-only status. Its message names where it came
+    from: "T-007 is parked: its status was set by hand to done, which isn't
+    allowed from draft. Mark it ready or draft to continue." Rejected:
+    parking only orchestrator-only statuses, which would let a hand-made
+    draft → done unblock dependent tasks.
+  - Agents and the capability check run through the dev image's entrypoint;
+    a failing check says the entrypoint must run the command it is given.
+    Rejected: always bypassing it with `--entrypoint`.
+  - Host git refuses a worktree holding a nested repository, never looks
+    into submodules, and never commits gitlinks.
+  - The proxy also refuses content blocks whose source isn't inline (URL or
+    file sources, at any depth), forwards the body as it was checked, refuses
+    bodies nested deeper than 64 levels, and matches betas
+    case-insensitively (adding `skills`).
+  - After the third review round: a task parked in `done`, or hand-edited
+    into `done` against the rules, doesn't count as done for its dependents.
+    The worker commits only after the task's containers are down, and puts
+    the worktree's `.git` file back as git wrote it before every git call
+    (on macOS an agent can reach it as `.GIT`). A rejected token is believed
+    only when the proxy saw Claude answer 401, since the CLI's output can be
+    forged. Agent-written text is stripped of control and bidirectional
+    characters where it enters the worker. Losing the lock stops running
+    tasks.
+

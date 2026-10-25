@@ -4,3 +4,5 @@
 !package.json
 !README.md
 !agent-image/Dockerfile
+!dist/proxy.js
+!agent-image/proxy/Dockerfile

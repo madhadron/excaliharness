@@ -15,8 +15,10 @@ export interface TaskSummary {
   statusLine: number;
   // Hash of the file's bytes when this summary was made.
   hash: string;
-  // Statuses the human may set from here (D-037, D-043).
+  // Statuses the human may set from here (D-037, D-043, D-076).
   allowed: HumanStatus[];
+  // Hand-edited into a status only the orchestrator sets (D-076).
+  parked: boolean;
 }
 
 export interface TasksSnapshot {
@@ -54,6 +56,10 @@ export interface MethodParams {
   "auth/submitCode": { attempt: number; code: string };
   // Without an attempt, cancels whatever sign-in is running.
   "auth/cancel": { attempt?: number } | undefined;
+  // The token for the egress proxy (D-066), sent when the worker needs it and
+  // kept in the worker's memory only (D-050).
+  "auth/setToken": { token: string };
+  "settings/update": { maxParallelTasks: number };
 }
 
 export type Method = keyof MethodParams;
@@ -66,6 +72,8 @@ export interface NotificationParams {
   "auth/prompt": { url: string; attempt: number };
   // What a long request is doing now, for a progress notification.
   progress: { message: string };
+  // A task needs to start and there's no token: sign in (D-049).
+  "auth/required": Record<string, never>;
 }
 
 export type NotificationMethod = keyof NotificationParams;
@@ -93,7 +101,7 @@ function isSetStatusParams(p: unknown): p is SetStatusParams {
     isObject(p) &&
     typeof p.id === "string" &&
     /^T-\d+$/.test(p.id) &&
-    (p.to === "ready" || p.to === "done") &&
+    (p.to === "ready" || p.to === "done" || p.to === "draft") &&
     typeof p.expectedStatus === "string" &&
     isStatus(p.expectedStatus) &&
     typeof p.expectedHash === "string"
@@ -107,6 +115,8 @@ const paramGuards: { [M in Method]: (params: unknown) => boolean } = {
   "auth/signIn": (p) => p === undefined,
   "auth/submitCode": (p) => isObject(p) && Number.isSafeInteger(p.attempt) && typeof p.code === "string" && p.code.length <= 2_000,
   "auth/cancel": (p) => p === undefined || (isObject(p) && (p.attempt === undefined || Number.isSafeInteger(p.attempt))),
+  "auth/setToken": (p) => isObject(p) && typeof p.token === "string" && /^sk-ant-[A-Za-z0-9_-]{20,500}$/.test(p.token),
+  "settings/update": (p) => isObject(p) && Number.isSafeInteger(p.maxParallelTasks) && (p.maxParallelTasks as number) >= 1 && (p.maxParallelTasks as number) <= 16,
 };
 
 export function isRequest(message: unknown): message is Request {
@@ -141,6 +151,7 @@ export function isNotification(message: unknown): message is Notification {
     );
   }
   if (message.method === "progress") return isObject(message.params) && typeof message.params.message === "string";
+  if (message.method === "auth/required") return isObject(message.params);
   return false;
 }
 

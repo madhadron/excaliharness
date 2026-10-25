@@ -49,6 +49,12 @@ export interface WorkerClientOptions {
   root: string;
   // The base agent image's Dockerfile, shipped in the extension (D-029).
   dockerfile: string;
+  // Per-workspace storage for the worker's generated files (D-059).
+  stateDir: string;
+  // The parallel-task limit to start each worker with.
+  maxParallelTasks?: () => number;
+  // Called each time a worker process starts, to send it what it needs.
+  onSpawn?: () => void;
   log: (line: string) => void;
   onNotification: (notification: Notification) => void;
   // The worker exited; anything derived from it (diagnostics) is now stale.
@@ -121,7 +127,9 @@ export class WorkerClient {
 
   private spawn(): void {
     this.versions = new Map();
-    const child = fork(this.options.workerPath, [this.options.root, this.options.dockerfile], {
+    const limit = this.options.maxParallelTasks?.();
+    const args = [this.options.root, this.options.dockerfile, this.options.stateDir, ...(limit === undefined ? [] : [String(limit)])];
+    const child = fork(this.options.workerPath, args, {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
       // Don't inherit the extension host's --inspect flags when debugging.
       execArgv: [],
@@ -142,6 +150,9 @@ export class WorkerClient {
       this.log(`[worker] process error: ${error.message}`);
       // A failed spawn emits "error" but never "exit".
       if (child.pid === undefined) this.exited(`failed to start: ${error.message}`);
+    });
+    child.once("spawn", () => {
+      if (current()) this.options.onSpawn?.();
     });
     child.on("exit", (code, signal) => {
       if (!current()) return;

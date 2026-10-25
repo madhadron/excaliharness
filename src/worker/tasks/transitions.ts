@@ -1,26 +1,59 @@
 // Status rules (D-037, D-042, D-047) as pure functions over parsed tasks.
 import { isStatus, type Diagnostic, type Status, type Task } from "./model";
 
-export type HumanStatus = "ready" | "done";
+export type HumanStatus = "ready" | "done" | "draft";
 
-const HUMAN_FROM: Record<HumanStatus, readonly Status[]> = {
+const HUMAN_FROM: Record<"ready" | "done", readonly Status[]> = {
   ready: ["draft", "needs-human"],
   done: ["review", "needs-human"],
 };
 
-export function isAllowedHumanChange(from: Status, to: Status): boolean {
-  return (to === "ready" || to === "done") && HUMAN_FROM[to].includes(from);
+// What the human may set. A parked task (D-076) may also go back to draft,
+// to ready, or, if it was parked in review, to done.
+export function allowedHumanStatuses(status: Status, parked = false): HumanStatus[] {
+  if (parked) return status === "review" ? ["ready", "done", "draft"] : ["ready", "draft"];
+  return (["ready", "done"] as const).filter((to) => HUMAN_FROM[to].includes(status));
 }
 
-export function allowedHumanStatuses(status: Status): HumanStatus[] {
-  return (["ready", "done"] as const).filter((to) => HUMAN_FROM[to].includes(status));
+export function isAllowedHumanChange(from: Status, to: Status, parked = false): boolean {
+  return (allowedHumanStatuses(from, parked) as Status[]).includes(to);
 }
 
 export function humanChangeRefusal(from: Status, to: Status): string {
   if (to === "ready" || to === "done") {
     return `a task can be marked ${to} only from ${HUMAN_FROM[to].join(" or ")}, and it was ${from}`;
   }
+  if (to === "draft") return "a task can be moved back to draft only while it is parked";
   return `${to} is set by the orchestrator`;
+}
+
+// The status a task is parked in, if it is: its last recorded change parked
+// it and the status line still says so.
+export function parkedStatus(task: Task): Status | undefined {
+  const last = [...task.statusEntries].reverse().find((e) => isStatus(e.to));
+  return last?.parked && last.to === task.status && isStatus(last.to) ? last.to : undefined;
+}
+
+// Parked as the rules see it: a status accepted from a git checkout (see
+// decide's `accepted`) is never parked.
+export function isParked(task: Task, accepted: ReadonlyMap<string, Status> = new Map()): boolean {
+  return !accepted.has(task.id) && parkedStatus(task) !== undefined;
+}
+
+// D-076's message. Any disallowed hand edit parks (D-079): one into a status
+// the human may set says where it came from instead.
+// Whether the task's last recorded change parked it, so a hand edit from
+// there may go back to draft (D-076). Statuses from a git checkout never are.
+export function wasParked(task: Task, accepted: ReadonlyMap<string, Status> = new Map()): boolean {
+  return !accepted.has(task.id) && [...task.statusEntries].reverse().find((e) => isStatus(e.to))?.parked === true;
+}
+
+export function parkedMessage(task: Task, status: Status): string {
+  const ways = allowedHumanStatuses(status, true).join(", ").replace(/, ([^,]*)$/, " or $1");
+  const from = [...task.statusEntries].reverse().find((e) => e.parked && e.to === status)?.from;
+  const human = status === "ready" || status === "done" || status === "draft";
+  const why = human ? `which isn't allowed from ${from && isStatus(from) ? from : "its previous status"}` : "which only the orchestrator sets";
+  return `${task.id} is parked: its status was set by hand to ${status}, ${why}. Mark it ${ways} to continue.`;
 }
 
 // The status the task last recorded in ## Updates. A task with no recorded
@@ -31,7 +64,8 @@ export function recordedStatus(task: Task): Status {
 }
 
 export type Change =
-  // The status line differs from the recorded status: someone edited it.
+  // The status line differs from the recorded status: someone edited it. A
+  // disallowed edit parks the task (D-076).
   | { id: string; type: "hand-edit"; from: Status; to: Status; allowed: boolean; reason?: string }
   | { id: string; type: "transition"; from: Status; to: Status; reason: string };
 
@@ -70,6 +104,13 @@ export function decide(
     if (task) report(task, { line: depsLine(task), severity: "error", message: `Dependency cycle: ${cycle.join(" → ")}.` });
   }
   const infrastructure = [...tasks.values()].filter((t) => t.kind === "infrastructure");
+  // Done counts only when the rules allow it: not a parked done, and not a
+  // hand edit into done that this step refuses (D-079).
+  const isDone = (t: Task) => {
+    if (t.status !== "done" || isParked(t, accepted)) return false;
+    const baseline = accepted.get(t.id) ?? recordedStatus(t);
+    return baseline === "done" || isAllowedHumanChange(baseline, "done", wasParked(t, accepted));
+  };
 
   // Tasks this task is still waiting on, as links; unknown ones are reported.
   const unmet = (task: Task): string[] => {
@@ -84,11 +125,11 @@ export function decide(
         // Every other task waits on infrastructure, so this would deadlock.
         report(task, { line: depsLine(task), severity: "error", message: `An infrastructure task can only depend on other infrastructure tasks, not ${link(dep)}.` });
         waiting.push(link(dep));
-      } else if (other.status !== "done") waiting.push(link(dep));
+      } else if (!isDone(other)) waiting.push(link(dep));
     }
     if (task.kind !== "infrastructure") {
       for (const infra of infrastructure) {
-        if (infra.status !== "done" && !task.dependsOn.includes(infra.id)) waiting.push(link(infra.id));
+        if (!isDone(infra) && !task.dependsOn.includes(infra.id)) waiting.push(link(infra.id));
       }
     }
     if (cycles.has(task.id)) waiting.push("a dependency cycle");
@@ -96,9 +137,16 @@ export function decide(
   };
 
   for (const task of tasks.values()) {
-    const baseline = accepted.get(task.id) ?? recordedStatus(task);
+    const override = accepted.get(task.id);
+    const baseline = override ?? recordedStatus(task);
+    // A git checkout's statuses aren't hand edits, so they can't be parked.
+    const parked = task.status === baseline && isParked(task, accepted) ? parkedStatus(task) : undefined;
+    if (parked) {
+      report(task, { line: task.statusLine, severity: "error", message: parkedMessage(task, parked) });
+      continue;
+    }
     if (task.status !== baseline) {
-      const allowed = isAllowedHumanChange(baseline, task.status);
+      const allowed = isAllowedHumanChange(baseline, task.status, wasParked(task, accepted));
       const change: Change = { id: task.id, type: "hand-edit", from: baseline, to: task.status, allowed };
       if (!allowed) change.reason = humanChangeRefusal(baseline, task.status);
       changes.push(change);

@@ -88,7 +88,20 @@ export class AuthManager implements vscode.Disposable {
     void vscode.window.showInformationMessage("Signed out of Claude. The token was removed from VS Code.");
   }
 
+  // Gives the worker the token for the egress proxy (D-066), if there is one.
+  async pushToken(): Promise<void> {
+    const token = await this.secrets.get(SECRET_KEY);
+    if (token) await this.worker.request("auth/setToken", { token }).catch((error: unknown) => this.output.warn(`couldn't give the worker the token: ${message(error)}`));
+  }
+
   handleNotification(notification: Notification): void {
+    if (notification.method === "auth/required") {
+      // A task needs to start: use the stored token, or sign in (D-049).
+      void this.getToken().then((token) => {
+        if (token) void this.pushToken();
+      });
+      return;
+    }
     if (notification.method === "auth/prompt" && this.prompts) {
       void this.askForCode(notification.params.url, notification.params.attempt, this.prompts.token);
     }
@@ -119,6 +132,7 @@ export class AuthManager implements vscode.Disposable {
       if (typeof token !== "string" || token === "") throw new Error("the worker returned no token");
       await this.secrets.store(SECRET_KEY, token);
       await this.refresh();
+      void this.pushToken();
       void vscode.window.showInformationMessage("Signed in to Claude.");
       return token;
     } catch (error) {

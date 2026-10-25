@@ -76,6 +76,8 @@ describe("dispatch", () => {
     },
     "auth/submitCode": () => "accepted",
     "auth/cancel": () => undefined,
+    "auth/setToken": () => undefined,
+    "settings/update": () => undefined,
   };
 
   it("sends null for a handler that returns nothing, so the reply survives IPC", async () => {

@@ -60,8 +60,22 @@ it are in [decisions.md](decisions.md) (D-005, D-009, D-011, D-030 to D-047).
   tasks, so an infrastructure task may only depend on other infrastructure
   tasks. A `needs-decision` task returns to its previous status once every
   question is checked.
-- A hand edit that isn't allowed is noted in Updates and left as is; the
-  orchestrator never reverts your edits.
+- A hand edit that isn't allowed is noted in Updates, ending in "parked", and
+  left as is; the orchestrator never reverts your edits. A **parked** task gets
+  no automatic changes and nothing starts it. It shows as an error in the
+  Problems panel and as `· parked (<status>)` in the index, and the CodeLens
+  offers "Mark ready" and "Back to draft" (and "Mark done" if it was parked in
+  `review`).
+- A `ready` task is started by the orchestrator (`in-implementation`), at most
+  two at a time by default (setting `excaliharness.maxParallelTasks`). When
+  the implementer finishes it goes to `review`; if it can't run, or runs over
+  60 minutes or 100 turns, to `needs-human` with the reason in Updates.
+  Changing a running task's status by hand stops it and keeps your status.
+  If Claude rejects the sign-in, the task stays `in-implementation` and
+  resumes after you sign in again.
+- An agent works in its task's worktree, kept in the extension's storage
+  (not in the repository), on branch `task/T-NNN`. Its changes to `tasks/`,
+  `TASKS.md`, `agents/` or `docs/decisions.md` are never committed.
 - Task files must be plain files under 1 MB in a plain `tasks/` directory;
   symbolic links are ignored and reported.
 - Status changes that arrive through git (checkout, pull, merge, reset) are

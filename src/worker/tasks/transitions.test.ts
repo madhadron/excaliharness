@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Status, Task } from "./model";
-import { allowedHumanStatuses, decide, findCycles, isAllowedHumanChange, recordedStatus } from "./transitions";
+import { allowedHumanStatuses, decide, findCycles, humanChangeRefusal, isAllowedHumanChange, parkedMessage, recordedStatus } from "./transitions";
 
 function task(id: string, status: Status, extra: Partial<Task> = {}, recorded?: Status): Task {
   return {
@@ -56,6 +56,15 @@ describe("human changes", () => {
   });
 });
 
+describe("parked wording", () => {
+  it("says why a human status parked the task", () => {
+    const parked = (status: Status, from: Status) => task("T-1", status, { statusEntries: [{ from, to: status, line: 9, parked: true }] });
+    expect(parkedMessage(parked("done", "draft"), "done")).toBe("T-1 is parked: its status was set by hand to done, which isn't allowed from draft. Mark it ready or draft to continue.");
+    expect(parkedMessage(parked("review", "ready"), "review")).toBe("T-1 is parked: its status was set by hand to review, which only the orchestrator sets. Mark it ready, done or draft to continue.");
+    expect(humanChangeRefusal("ready", "draft")).toBe("a task can be moved back to draft only while it is parked");
+  });
+});
+
 describe("dependencies", () => {
   it("moves ready to waiting while a dependency isn't done, and back once it is", () => {
     const waiting = decide(map(task("T-1", "in-implementation"), task("T-2", "ready", { dependsOn: ["T-1"] })));
@@ -67,6 +76,18 @@ describe("dependencies", () => {
   it("makes every other task wait on infrastructure tasks, but not infrastructure on itself", () => {
     const { changes } = decide(map(task("T-1", "ready", { kind: "infrastructure" }), task("T-2", "ready"), task("T-3", "ready", { kind: "infrastructure" })));
     expect(changes).toEqual([{ id: "T-2", type: "transition", from: "ready", to: "waiting-for-dependencies", reason: "waiting on [[T-1]], [[T-3]]" }]);
+  });
+
+  it("doesn't count a done that the rules refuse or that is parked (D-079)", () => {
+    const dependent = () => task("T-2", "waiting-for-dependencies", { dependsOn: ["T-1"] });
+    // Hand-edited from draft to done in this step: refused, so not done.
+    const refused = decide(map(task("T-1", "done", {}, "draft"), dependent()));
+    expect(refused.changes).toEqual([expect.objectContaining({ id: "T-1", type: "hand-edit", allowed: false })]);
+    // Parked in done by that refusal: still not done.
+    const parkedDone = task("T-1", "done", { statusEntries: [{ from: "draft", to: "done", line: 10, parked: true }] });
+    expect(decide(map(parkedDone, dependent())).changes).toEqual([]);
+    // Marked done from review, as allowed: done.
+    expect(decide(map(task("T-1", "done", {}, "review"), dependent())).changes).toEqual([expect.objectContaining({ id: "T-1", type: "hand-edit", allowed: true }), expect.objectContaining({ id: "T-2", to: "ready" })]);
   });
 
   it("never changes a draft", () => {

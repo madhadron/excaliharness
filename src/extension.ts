@@ -39,10 +39,20 @@ export function activate(context: vscode.ExtensionContext): ExcaliharnessApi | u
   // Sign-in notifications go to the AuthManager, created right after the
   // worker; none can arrive before then, since they need a sign-in request.
   const forAuth: { manager?: AuthManager } = {};
+  const maxParallelTasks = () => vscode.workspace.getConfiguration("excaliharness").get<number>("maxParallelTasks", 2);
+  const stateDir = (context.storageUri ?? context.globalStorageUri).fsPath;
+  fs.mkdirSync(stateDir, { recursive: true });
   const worker = new WorkerClient({
     workerPath: context.asAbsolutePath("dist/worker.js"),
     root,
     dockerfile: context.asAbsolutePath("agent-image/Dockerfile"),
+    stateDir,
+    maxParallelTasks,
+    // Each new worker process needs the token and settings again.
+    onSpawn: () => {
+      void forAuth.manager?.pushToken();
+      void worker.request("settings/update", { maxParallelTasks: maxParallelTasks() }).catch(() => undefined);
+    },
     log: (line) => output.info(line),
     onNotification: (n) => {
       if (n.method === "tasks/changed") state.update(n.params);
@@ -65,6 +75,9 @@ export function activate(context: vscode.ExtensionContext): ExcaliharnessApi | u
 
   const signIn = new AuthManager(context.secrets, worker, output);
   forAuth.manager = signIn;
+  // The first worker started before the AuthManager existed.
+  void signIn.pushToken();
+  void worker.request("settings/update", { maxParallelTasks: maxParallelTasks() }).catch(() => undefined);
 
   const markdown: vscode.DocumentSelector = { scheme: "file", language: "markdown" };
   const lens = new StatusLensProvider(root, state);
@@ -79,6 +92,11 @@ export function activate(context: vscode.ExtensionContext): ExcaliharnessApi | u
     vscode.languages.registerCodeLensProvider({ ...markdown, pattern: new vscode.RelativePattern(root, "tasks/T-*.md") }, lens),
     ...registerCommands(root, worker, state),
     signIn,
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("excaliharness.maxParallelTasks")) {
+        void worker.request("settings/update", { maxParallelTasks: maxParallelTasks() }).catch(() => undefined);
+      }
+    }),
     vscode.commands.registerCommand(SIGN_IN_COMMAND, () => signIn.signIn()),
     vscode.commands.registerCommand(SIGN_OUT_COMMAND, () => signIn.signOut()),
     vscode.commands.registerCommand(ACCOUNT_COMMAND, () => signIn.account()),

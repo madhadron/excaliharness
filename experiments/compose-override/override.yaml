@@ -1,0 +1,37 @@
+# What the worker would generate (D-059, D-060, D-064).
+networks:
+  excaliharness-internal-network: { internal: true }
+  excaliharness-egress-network: {}
+services:
+  dev:
+    build: !reset null
+    image: sha256:3019e9679e1efd70b0a92cb2023cc4da3f0983e9eec02f4698e062fc323a1fb1
+    pull_policy: never
+    networks: !override [excaliharness-internal-network]
+    volumes: !override ["./work:/workspace"]
+    env_file: !reset []
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    user: "1000:1000"
+    tmpfs: ["/home/node:uid=1000,gid=1000,mode=700", "/tmp"]
+    labels: { org.excaliharness.role: agent }
+    environment:
+      ANTHROPIC_BASE_URL: http://excaliharness-egress-proxy:8080
+      CLAUDE_CODE_OAUTH_TOKEN: placeholder-not-a-token
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+  excaliharness-egress-proxy:
+    image: node:22-slim
+    pull_policy: never
+    command: ["node", "/proxy/proxy.cjs"]
+    volumes: ["./proxy.cjs:/proxy/proxy.cjs:ro"]
+    environment:
+      # The real-token check passes one in; otherwise a fake one (E-005).
+      PROXY_TOKEN: ${PROXY_TOKEN:-sk-ant-oat01-fake-token-for-e005}
+    networks: [excaliharness-internal-network, excaliharness-egress-network]
+  db:
+    # Copied from the resolved config of compose.yaml alone, where an implicit
+    # default network shows up as "default", then ours added (E-007).
+    networks: [default, excaliharness-internal-network]
+  cache:
+    networks: [excaliharness-internal-network]
