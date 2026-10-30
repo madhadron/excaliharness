@@ -9,6 +9,8 @@ import { Orchestrator } from "./orchestrator";
 import { dispatch, type Notification, type Response } from "./protocol";
 import { run } from "./runner/exec";
 import { TaskRunner } from "./runner/runner";
+import { Worktrees } from "./runner/worktree";
+import { Reviews } from "./review";
 import { SignInService } from "./signIn";
 
 const root = process.argv[2];
@@ -94,6 +96,10 @@ const orchestrator = new Orchestrator(root, {
   ...(Number.isInteger(maxParallelTasks) && maxParallelTasks >= 1 ? { maxParallelTasks } : {}),
 });
 
+// Reviews need only git, so they work without Docker and in a read-only
+// window.
+const reviews = new Reviews(new Worktrees(run, root, path.join(stateDir, "worktrees"), log), path.join(stateDir, "review"));
+
 // Docker is looked up afresh for each sign-in, so starting Docker after the
 // extension just works. `signIn` is the service of the current (or last) one.
 let signIn: SignInService | undefined;
@@ -130,6 +136,7 @@ process.on("message", (message: unknown) => {
       waiting.clear();
     },
     "settings/update": ({ maxParallelTasks }) => orchestrator.setMaxParallelTasks(maxParallelTasks),
+    "review/prepare": ({ id }) => reviews.prepare(id),
   }).then((response) => response && send(response));
 });
 

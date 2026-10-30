@@ -15,6 +15,14 @@ export const STATUSES = [
 
 export type Status = (typeof STATUSES)[number];
 
+// The extension's id (D-028), which review links name.
+export const EXTENSION_ID = "madhadron.excaliharness";
+
+// The `review:` metadata value added when a task enters review (D-027).
+export function reviewLink(id: string): string {
+  return `[Open review](vscode://${EXTENSION_ID}/review/${id})`;
+}
+
 export function isStatus(value: string): value is Status {
   return (STATUSES as readonly string[]).includes(value);
 }

@@ -1,12 +1,15 @@
 // Pure helpers the extension uses on document text; kept free of the vscode
 // module so they can be unit tested.
 import * as path from "node:path";
-import { parseTask } from "./worker/tasks/parse";
+import { findFences, parseSections, parseTask } from "./worker/tasks/parse";
+import { splitText } from "./worker/tasks/text";
 
 // Bounded and without nested brackets, so a line of "[[[[..." can't make the
 // match quadratic and stall the extension host.
 const WIKILINK = /\[\[([^[\]\n]{1,200})\]\]/g;
 const TASK_FILE = /^(T-\d+)\.md$/;
+const INDEX_ENTRY = /^\* \[\[(T-\d+)\]\]/;
+const REVIEW_PATH = /^\/review\/(T-\d+)$/;
 // Documents larger than this aren't scanned for links.
 export const MAX_LINK_SCAN_CHARS = 1024 * 1024;
 
@@ -48,4 +51,26 @@ export function statusOf(text: string, id: string): { line: number; value: strin
 export function taskIdOf(root: string, file: string): string | undefined {
   if (path.dirname(file) !== path.join(root, "tasks")) return undefined;
   return TASK_FILE.exec(path.basename(file))?.[1];
+}
+
+// The lines of TASKS.md's ## Index that list a task, as the worker writes
+// them (D-034).
+export function indexEntries(text: string): { id: string; line: number }[] {
+  if (text.length > MAX_LINK_SCAN_CHARS) return [];
+  const { lines } = splitText(text);
+  const fences = findFences(lines);
+  const index = parseSections(lines, fences).find((s) => s.name === "Index");
+  if (!index) return [];
+  const found: { id: string; line: number }[] = [];
+  for (let l = index.heading + 1; l < index.end; l++) {
+    if (fences.inside.has(l)) continue;
+    const id = INDEX_ENTRY.exec(lines[l] ?? "")?.[1];
+    if (id) found.push({ id, line: l });
+  }
+  return found;
+}
+
+// The task id in a review link's path, `/review/T-NNN` (D-027).
+export function reviewIdOf(uriPath: string): string | undefined {
+  return REVIEW_PATH.exec(uriPath)?.[1];
 }

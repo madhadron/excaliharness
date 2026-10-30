@@ -77,6 +77,44 @@ suite("task files", () => {
   });
 });
 
+suite("review", () => {
+  const lensTitles = async (uri: vscode.Uri, line: number) => {
+    const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", uri);
+    return lenses.filter((l) => l.range.start.line === line).map((l) => l.command?.title ?? "");
+  };
+
+  test("a task in review offers Open review above its status line (D-027)", async () => {
+    await api();
+    const uri = vscode.Uri.file(file("tasks/T-004.md"));
+    await vscode.window.showTextDocument(uri);
+    const titles = await waitFor(async () => {
+      const found = await lensTitles(uri, 2);
+      return found.includes("Open review") ? found : undefined;
+    }, "the Open review CodeLens");
+    assert.deepEqual(titles, ["Mark done", "Open review"]);
+    const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", uri);
+    const open = lenses.find((l) => l.command?.title === "Open review");
+    assert.equal(open?.command?.command, "excaliharness.openReview");
+    assert.deepEqual(open?.command?.arguments, [{ id: "T-004" }]);
+  });
+
+  test("the TASKS.md entry of a task in review offers Open review, and no other entry does", async () => {
+    await api();
+    const uri = vscode.Uri.file(file("TASKS.md"));
+    await vscode.window.showTextDocument(uri);
+    const line = await waitFor(() => {
+      const index = fs.readFileSync(file("TASKS.md"), "utf8").split("\n").findIndex((l) => l.startsWith("* [[T-004]]"));
+      return index >= 0 ? index : undefined;
+    }, "T-004's index line");
+    await waitFor(async () => ((await lensTitles(uri, line)).includes("Open review") ? true : undefined), "the index CodeLens");
+    const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", uri);
+    assert.deepEqual(
+      lenses.map((l) => [l.range.start.line, l.command?.title, l.command?.arguments]),
+      [[line, "Open review", [{ id: "T-004" }]]],
+    );
+  });
+});
+
 suite("attention", () => {
   test('"Open task" opens the task file at its questions (D-084)', async () => {
     await api();

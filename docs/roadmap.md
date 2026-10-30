@@ -62,9 +62,12 @@ tasks.
     - **Other services as relays.** They keep their own networks, so an agent
       could reach the internet through, e.g., a database's `COPY ... TO
       PROGRAM` (accepted risk, D-079).
-    - **Opening a worktree for review** (D-077) must not run its
-      `.vscode/tasks.json` or apply its workspace settings, and a review UI
-      must not follow symbolic links in it.
+    - **Opening a worktree for review** (D-077, D-084): it opens in a new
+      window VS Code doesn't trust, where the extension runs in limited mode
+      and the diff leaves out files reached through symbolic links. A
+      folder trusted through a trusted parent folder would still apply its
+      settings and allow its tasks, and in that window the extension would
+      start a worker on the worktree.
     - **The CLI's output is forgeable** by anything the agent runs (same uid),
       so the session ID and summary are untrusted; host-side SDK callbacks
       stay minimal.

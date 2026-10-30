@@ -291,6 +291,52 @@ export class Worktrees {
     return diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n… (diff truncated)` : diff;
   }
 
+  // The files the task's branch changed since it left the main checkout's
+  // branch, for the review (D-027). Read from commits in the main repository,
+  // never from the worktree. Gitlinks and names git would never write are
+  // left out.
+  async changedFiles(taskId: string): Promise<{ base: string; files: ChangedFile[]; truncated: boolean }> {
+    const base = await this.startCommit(taskId);
+    // -z: ":<modes> <ids> <status>\0<path>\0" per file, paths as they are.
+    const listed = await this.exec(["diff", "--raw", "-z", "--no-renames", "--no-abbrev", "--ignore-submodules=all", base, `refs/heads/${this.branch(taskId)}`], this.root);
+    if (listed.code !== 0) throw new Error(`git diff failed:\n${tail(listed)}`);
+    const fields = listed.stdout.split("\0");
+    // A cut-off listing ends in a partial entry.
+    if (listed.truncated) fields.splice(-2);
+    const files: ChangedFile[] = [];
+    let truncated = listed.truncated === true;
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+      const [, newMode, status] = /^:\d{6} (\d{6}) \S+ \S+ ([ADMT])$/.exec(fields[i] ?? "") ?? [];
+      const file = fields[i + 1] ?? "";
+      if (!status || newMode === "160000" || !isPlainRelative(file)) continue;
+      if (files.length >= MAX_REVIEW_FILES) {
+        truncated = true;
+        break;
+      }
+      files.push({ path: file, change: status === "A" ? "added" : status === "D" ? "deleted" : "modified" });
+    }
+    return { base, files, truncated };
+  }
+
+  // Checks `files` of `commit` out into `dir` (replacing it), through a
+  // separate index, as exportCommit does for the whole tree.
+  async exportFiles(commit: string, files: readonly string[], dir: string): Promise<void> {
+    removeQuietly(dir, this.log);
+    fs.mkdirSync(dir, { recursive: true });
+    if (!files.length) return;
+    const index = `${dir}.index`;
+    fs.rmSync(index, { force: true });
+    const env = { GIT_INDEX_FILE: index, GIT_WORK_TREE: dir };
+    try {
+      await this.git(["read-tree", commit], this.root, "read-tree", env);
+      for (let i = 0; i < files.length; i += EXPORT_CHUNK) {
+        await this.git(["checkout-index", "--force", "--", ...files.slice(i, i + EXPORT_CHUNK)], this.root, "checkout-index", env);
+      }
+    } finally {
+      fs.rmSync(index, { force: true });
+    }
+  }
+
   // Whether a commit still exists (a reset branch may have lost it).
   async exists(commit: string): Promise<boolean> {
     return (await this.exec(["cat-file", "-e", `${commit}^{commit}`], this.root)).code === 0;
@@ -358,6 +404,21 @@ export class Worktrees {
 }
 
 const MAX_EXPORT_FILES = 500_000;
+// More than a diff editor can usefully show.
+const MAX_REVIEW_FILES = 2_000;
+// Paths per checkout-index call, to stay well under argument limits.
+const EXPORT_CHUNK = 200;
+
+export interface ChangedFile {
+  // Relative to the repository, with forward slashes.
+  path: string;
+  change: "added" | "modified" | "deleted";
+}
+
+// A relative path with no empty, "." or ".." parts.
+export function isPlainRelative(file: string): boolean {
+  return file !== "" && !file.startsWith("/") && file.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
 const MAX_EXPORT_BYTES = 4e9;
 
 // Removes a folder the gates or a build used, making what a container left

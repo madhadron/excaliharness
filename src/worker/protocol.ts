@@ -45,6 +45,20 @@ export interface SetStatusParams {
   expectedHash: string;
 }
 
+// What "Open review" needs (D-027): the worktree to open, and copies of the
+// changed files as they were where the task's branch started.
+export interface ReviewInfo {
+  id: string;
+  worktree: string;
+  // The base commit's versions of the modified and deleted files, at the
+  // same relative paths.
+  baseDir: string;
+  base: string;
+  files: { path: string; change: "added" | "modified" | "deleted" }[];
+  // More files changed than are listed.
+  truncated: boolean;
+}
+
 export interface MethodParams {
   ping: undefined;
   "tasks/list": undefined;
@@ -60,6 +74,8 @@ export interface MethodParams {
   // kept in the worker's memory only (D-050).
   "auth/setToken": { token: string };
   "settings/update": { maxParallelTasks: number };
+  // Prepares a task's review; the result is a ReviewInfo.
+  "review/prepare": { id: string };
 }
 
 export type Method = keyof MethodParams;
@@ -131,6 +147,7 @@ const paramGuards: { [M in Method]: (params: unknown) => boolean } = {
   "auth/cancel": (p) => p === undefined || (isObject(p) && (p.attempt === undefined || Number.isSafeInteger(p.attempt))),
   "auth/setToken": (p) => isObject(p) && typeof p.token === "string" && /^sk-ant-[A-Za-z0-9_-]{20,500}$/.test(p.token),
   "settings/update": (p) => isObject(p) && Number.isSafeInteger(p.maxParallelTasks) && (p.maxParallelTasks as number) >= 1 && (p.maxParallelTasks as number) <= 16,
+  "review/prepare": (p) => isObject(p) && typeof p.id === "string" && /^T-\d+$/.test(p.id),
 };
 
 export function isRequest(message: unknown): message is Request {
@@ -180,6 +197,19 @@ export function isNotification(message: unknown): message is Notification {
     );
   }
   return false;
+}
+
+export function isReviewInfo(r: unknown): r is ReviewInfo {
+  return (
+    isObject(r) &&
+    typeof r.id === "string" &&
+    typeof r.worktree === "string" &&
+    typeof r.baseDir === "string" &&
+    typeof r.base === "string" &&
+    typeof r.truncated === "boolean" &&
+    Array.isArray(r.files) &&
+    r.files.every((f) => isObject(f) && typeof f.path === "string" && (f.change === "added" || f.change === "modified" || f.change === "deleted"))
+  );
 }
 
 export type Handlers = { [M in Method]: (params: MethodParams[M]) => unknown };

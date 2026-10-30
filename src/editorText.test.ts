@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { findWikilinks, resolveWikilink, statusOf, taskIdOf } from "./editorText";
+import { findWikilinks, indexEntries, resolveWikilink, reviewIdOf, statusOf, taskIdOf } from "./editorText";
 
 const root = "/repo";
 
@@ -47,5 +47,33 @@ describe("taskIdOf", () => {
     expect(taskIdOf(root, path.join(root, "tasks", "notes.md"))).toBeUndefined();
     expect(taskIdOf(root, path.join(root, "tasks", "sub", "T-1.md"))).toBeUndefined();
     expect(taskIdOf(root, path.join("/other", "tasks", "T-1.md"))).toBeUndefined();
+  });
+});
+
+describe("indexEntries", () => {
+  it("finds the task lines of ## Index only", () => {
+    const text = "# Tasks\n\n## Pipelines\n* [[T-9]] not here\n\n## Index\n* [[T-1]] One · review\n```\n* [[T-7]] fenced\n```\n* [[T-2]] Two · draft\n\n## Later\n* [[T-3]] x\n";
+    expect(indexEntries(text)).toEqual([
+      { id: "T-1", line: 6 },
+      { id: "T-2", line: 10 },
+    ]);
+  });
+
+  it("finds nothing without an index", () => {
+    expect(indexEntries("# Tasks\n* [[T-1]] x\n")).toEqual([]);
+  });
+});
+
+describe("reviewIdOf", () => {
+  it("takes the task id from /review/T-NNN only", () => {
+    expect(reviewIdOf("/review/T-12")).toBe("T-12");
+    expect(["/review/T-1/x", "/review/../T-1", "/review/t-1", "/other/T-1", "review/T-1", "/review/T-"].map((p) => reviewIdOf(p))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 });

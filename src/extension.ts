@@ -6,6 +6,7 @@ import { ACCOUNT_COMMAND, AuthManager, SIGN_IN_COMMAND, SIGN_OUT_COMMAND } from 
 import { registerCommands, RESTART_COMMAND } from "./commands";
 import { TaskDiagnostics } from "./diagnostics";
 import { WikilinkProvider } from "./links";
+import { registerOpenReview, ReviewReceiver } from "./review";
 import { StatusLensProvider } from "./statusLens";
 import { TaskState } from "./taskState";
 import type { TasksSnapshot } from "./worker/protocol";
@@ -26,10 +27,37 @@ function findRoot(): string | undefined {
 
 export function activate(context: vscode.ExtensionContext): ExcaliharnessApi | undefined {
   const output = vscode.window.createOutputChannel("Excaliharness", { log: true });
+  // In every window, trusted or not: a review the trusted window left for
+  // this one (D-027).
+  const receiver = new ReviewReceiver(context.globalState, output);
+  // Disposed in order: what the trusted part starts goes before the channel
+  // it logs to.
+  const trusted: vscode.Disposable[] = [];
+  context.subscriptions.push({ dispose: () => trusted.forEach((d) => d.dispose()) }, receiver, output);
+  void receiver.check();
+  if (vscode.workspace.isTrusted) return activateTrusted(context, output, receiver, trusted);
+  // Limited mode (package.json): no worker, watcher or commands in a folder
+  // VS Code doesn't trust, such as a review's worktree.
+  let started = false;
+  trusted.push(
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      if (started) return;
+      started = true;
+      activateTrusted(context, output, receiver, trusted);
+    }),
+  );
+  return undefined;
+}
+
+function activateTrusted(
+  context: vscode.ExtensionContext,
+  output: vscode.LogOutputChannel,
+  receiver: ReviewReceiver,
+  subscriptions: vscode.Disposable[],
+): ExcaliharnessApi | undefined {
   const root = findRoot();
   if (!root) {
     output.info("No workspace folder contains TASKS.md; nothing to orchestrate.");
-    context.subscriptions.push(output);
     return undefined;
   }
   // Shows the commands in the palette only where they work.
@@ -84,15 +112,16 @@ export function activate(context: vscode.ExtensionContext): ExcaliharnessApi | u
   const markdown: vscode.DocumentSelector = { scheme: "file", language: "markdown" };
   const lens = new StatusLensProvider(root, state);
   // The worker goes first so it is stopped before the channel it logs to.
-  context.subscriptions.push(
+  subscriptions.push(
     { dispose: () => worker.dispose() },
-    output,
     state,
     diagnostics,
     lens,
     vscode.languages.registerDocumentLinkProvider(markdown, new WikilinkProvider(root)),
     vscode.languages.registerCodeLensProvider({ ...markdown, pattern: new vscode.RelativePattern(root, "tasks/T-*.md") }, lens),
+    vscode.languages.registerCodeLensProvider({ ...markdown, pattern: new vscode.RelativePattern(root, "TASKS.md") }, lens),
     ...registerCommands(root, worker, state),
+    ...registerOpenReview(root, worker, receiver),
     signIn,
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("excaliharness.maxParallelTasks")) {

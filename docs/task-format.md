@@ -35,7 +35,10 @@ it are in [decisions.md](decisions.md) (D-005, D-009, D-011, D-030 to D-047).
     - `depends_on`: wikilinks to other tasks, comma separated.
     - `pipeline`: a pipeline name from `TASKS.md`.
     - `kind`: `infrastructure` marks a task every other task waits on.
-    - `design`, `review`: links, written by the orchestrator in later features.
+    - `review`: written by the orchestrator when the task enters `review`,
+      as `[Open review](vscode://madhadron.excaliharness/review/T-NNN)`.
+      The link opens the task's worktree, with its changes, in VS Code.
+    - `design`: a link, written by the orchestrator in a later feature.
 - **Sections**: `## Description`, `## Context`, `## Issue`, `## Expectation`,
   `## Questions`, `## Updates`; names are case-sensitive. Headings, questions
   and Updates lines inside fenced code blocks and HTML comments are ignored,
@@ -92,6 +95,12 @@ it are in [decisions.md](decisions.md) (D-005, D-009, D-011, D-030 to D-047).
   reset).
 - On `review`, `needs-human` or `needs-decision`, VS Code shows a notification
   and, on macOS, speaks it (setting `excaliharness.speakNotifications`).
+- "Open review" (the notification's button, the `review:` link, or the
+  CodeLens above a `review` task's status line and on its `TASKS.md` entry)
+  opens the task's worktree in a new, untrusted VS Code window, with a diff of
+  every file its branch changed since it left your branch. The left side is
+  that starting commit, the right side the worktree's files, which you can
+  edit. Files that are symbolic links in the worktree aren't shown.
 - Changing a running task's status by hand stops it and keeps your status.
   If Claude rejects the sign-in, the task stays `in-implementation` and
   resumes after you sign in again.

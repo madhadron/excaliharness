@@ -25,6 +25,20 @@ describe("editTask", () => {
     expect(out).toBe(task.replace("* status: draft", "* status: ready").replace("* old entry\n", "* old entry\n* new entry\n"));
   });
 
+  it("adds a metadata item at the end of the list, in the same edit as the status", () => {
+    const out = editTask(task, 2, { status: "review", metadata: [{ key: "review", value: "[Open review](x)" }], updates: ["* new entry"] });
+    expect(out).toBe(task.replace("* status: draft\n* note: kept\n", "* status: review\n* note: kept\n* review: [Open review](x)\n").replace("* old entry\n", "* old entry\n* new entry\n"));
+  });
+
+  it("replaces a metadata item that is already there, wherever it is in the list", () => {
+    const text = "# T-1: x\n\n* review: old\n* status: draft\n* note: kept\n\nBody\n";
+    expect(editTask(text, 3, { metadata: [{ key: "review", value: "new" }], updates: [] })).toBe("# T-1: x\n\n* review: new\n* status: draft\n* note: kept\n\nBody\n");
+  });
+
+  it("adds a metadata item after a status line that ends the file", () => {
+    expect(editTask("# T-1: x\n* status: draft", 1, { metadata: [{ key: "review", value: "y" }], updates: [] })).toBe("# T-1: x\n* status: draft\n* review: y");
+  });
+
   it("keeps the bullet and spacing before status:", () => {
     expect(editTask("# T-1: x\n  - status:   draft\n", 1, { status: "ready", updates: [] })).toBe("# T-1: x\n  - status: ready\n");
   });

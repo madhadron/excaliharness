@@ -111,9 +111,14 @@ Here is an example of working on a project with Excaliharness.
    `needs-decision`, and you get a notification. Write your answer and check
    the box, and the task picks up where it stopped.
 9. **Review.** When a task is ready, VS Code shows a notification, spoken
-   too, with "Open review", which opens its worktree. You can edit there
-   directly. Line comments, chat and an Approve button that merges the branch
-   come with the review UI. When you're satisfied, mark the task done, and
+   too, with "Open review". The same link is added to the task's metadata
+   (`* review: [Open review](vscode://madhadron.excaliharness/review/T-NNN)`),
+   and an "Open review" CodeLens appears above its status line and on its
+   `TASKS.md` entry. Each opens the task's worktree in a new window that
+   VS Code doesn't trust, so its tasks and workspace settings stay off. That
+   window shows the branch's changes against the commit where it left your
+   branch, and you can edit there directly. Line comments, chat and an
+   Approve button that merges the branch come with the review UI. When you're satisfied, mark the task done, and
    the tasks waiting on it start.
 
 If you set a status by hand that the orchestrator should set, the task is

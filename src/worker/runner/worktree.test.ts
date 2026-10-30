@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { run } from "./exec";
-import { copiedFiles, copiedPaths, isBuildInput, Worktrees } from "./worktree";
+import { copiedFiles, copiedPaths, isBuildInput, isPlainRelative, Worktrees } from "./worktree";
 
 let root: string;
 let state: string;
@@ -64,6 +64,51 @@ describe("Worktrees", () => {
     expect((await w.commit("T-1", "implementer", "T-1: change a")).committed).toBe(true);
     expect(git(["log", "-1", "--format=%an|%s"], dir)).toBe("Excaliharness (implementer)|T-1: change a");
     expect(await w.diff("T-1")).toContain("+two");
+  });
+
+  it("lists the branch's changed files from commits only, and exports their base versions", async () => {
+    fs.writeFileSync(path.join(root, "gone.txt"), "old\n");
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(path.join(root, "src", "-x.txt"), "dash\n");
+    git(["add", "-A"]);
+    git(["commit", "-q", "-m", "more"]);
+    const w = worktrees();
+    const dir = await w.ensure("T-1");
+    fs.writeFileSync(path.join(dir, "a.txt"), "two\n");
+    fs.writeFileSync(path.join(dir, "src", "-x.txt"), "changed\n");
+    fs.writeFileSync(path.join(dir, "new.txt"), "new\n");
+    fs.rmSync(path.join(dir, "gone.txt"));
+    await w.commit("T-1", "implementer", "T-1: change");
+    // Not committed: not listed.
+    fs.writeFileSync(path.join(dir, "later.txt"), "x\n");
+    // The main checkout moving on doesn't change the base.
+    fs.writeFileSync(path.join(root, "a.txt"), "main moved\n");
+    git(["commit", "-q", "-am", "main"]);
+
+    const { base, files, truncated } = await w.changedFiles("T-1");
+    expect(base).toBe(git(["rev-parse", "HEAD~1"]));
+    expect(truncated).toBe(false);
+    expect(files).toEqual([
+      { path: "a.txt", change: "modified" },
+      { path: "gone.txt", change: "deleted" },
+      { path: "new.txt", change: "added" },
+      { path: "src/-x.txt", change: "modified" },
+    ]);
+
+    const out = path.join(state, "review", "T-1");
+    fs.mkdirSync(out, { recursive: true });
+    fs.writeFileSync(path.join(out, "stale.txt"), "x");
+    await w.exportFiles(base, ["a.txt", "gone.txt", "src/-x.txt"], out);
+    expect(fs.readFileSync(path.join(out, "a.txt"), "utf8")).toBe("one\n");
+    expect(fs.readFileSync(path.join(out, "gone.txt"), "utf8")).toBe("old\n");
+    expect(fs.readFileSync(path.join(out, "src", "-x.txt"), "utf8")).toBe("dash\n");
+    expect(fs.existsSync(path.join(out, "stale.txt"))).toBe(false);
+    expect(fs.existsSync(`${out}.index`)).toBe(false);
+  });
+
+  it("tells plain relative paths from others", () => {
+    expect(["a", "a/b.txt", ".github/x"].map((p) => isPlainRelative(p))).toEqual([true, true, true]);
+    expect(["", "/a", "a/../b", "./a", "a//b", ".."].map((p) => isPlainRelative(p))).toEqual([false, false, false, false, false, false]);
   });
 
   it("puts changes not committed yet in the diff", async () => {

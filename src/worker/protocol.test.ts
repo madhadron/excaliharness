@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dispatch, isNotification, isRequest, isResponse, type Handlers } from "./protocol";
+import { dispatch, isNotification, isRequest, isResponse, isReviewInfo, type Handlers } from "./protocol";
 
 const setStatus = { id: "T-1", to: "ready", expectedStatus: "draft", expectedHash: "abc" };
 
@@ -8,6 +8,7 @@ describe("isRequest", () => {
     { id: 1, method: "ping" },
     { id: 1, method: "tasks/list" },
     { id: 1, method: "tasks/setStatus", params: setStatus },
+    { id: 1, method: "review/prepare", params: { id: "T-12" } },
   ])("accepts %j", (message) => {
     expect(isRequest(message)).toBe(true);
   });
@@ -28,6 +29,8 @@ describe("isRequest", () => {
     { id: 1, method: "tasks/setStatus", params: { ...setStatus, id: "../etc" } },
     { id: 1, method: "tasks/setStatus", params: { ...setStatus, expectedStatus: "nope" } },
     { id: 1, method: "tasks/setStatus", params: { ...setStatus, expectedHash: 5 } },
+    { id: 1, method: "review/prepare", params: { id: "../T-1" } },
+    { id: 1, method: "review/prepare" },
   ])("rejects %j", (message) => {
     expect(isRequest(message)).toBe(false);
   });
@@ -78,6 +81,7 @@ describe("dispatch", () => {
     "auth/cancel": () => undefined,
     "auth/setToken": () => undefined,
     "settings/update": () => undefined,
+    "review/prepare": () => undefined,
   };
 
   it("sends null for a handler that returns nothing, so the reply survives IPC", async () => {
@@ -119,5 +123,17 @@ describe("dispatch", () => {
 
   it.each([null, "x", { method: "ping" }, { id: "3", method: "ping" }])("ignores %j, which has no usable id", async (message) => {
     await expect(dispatch(message, handlers)).resolves.toBeUndefined();
+  });
+});
+
+describe("isReviewInfo", () => {
+  const info = { id: "T-1", worktree: "/s/worktrees/T-1", baseDir: "/s/review/T-1", base: "abc", files: [{ path: "a.txt", change: "added" }], truncated: false };
+
+  it("accepts the worker's review result", () => {
+    expect(isReviewInfo(info)).toBe(true);
+  });
+
+  it.each([null, { ...info, files: [{ path: "a.txt", change: "renamed" }] }, { ...info, truncated: "no" }, { ...info, worktree: undefined }])("rejects %j", (r) => {
+    expect(isReviewInfo(r)).toBe(false);
   });
 });

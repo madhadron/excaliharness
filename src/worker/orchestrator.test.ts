@@ -288,6 +288,7 @@ describe("running tasks", () => {
     expect(text).toContain("· orchestrator · round 1: gates passed; no findings");
     expect(text).toContain("status: in-implementation → review · gates passed and reviewers found nothing: Added hello.js");
     expect(text).toContain("· orchestrator · The implementer made no tests.");
+    expect(text).toMatch(/^\* status: review\n\* review: \[Open review\]\(vscode:\/\/madhadron\.excaliharness\/review\/T-1\)\n\n## Updates/m);
     expect(notes).toContainEqual({ method: "task/attention", params: { id: "T-1", title: "Task T-1", status: "review", path: "tasks/T-1.md", worktree: "/state/worktrees/T-1" } });
   });
 

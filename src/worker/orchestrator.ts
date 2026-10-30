@@ -9,7 +9,7 @@ import type { Notification, SetStatusParams, TasksSnapshot, TaskSummary } from "
 import { hashOf, readFile, removeLeftoverTempFiles, Store } from "./store";
 import { editTask, replaceIndex, type TaskEdit } from "./tasks/edit";
 import { indexLines, type IndexEntry } from "./tasks/index";
-import type { Diagnostic, Status, Task } from "./tasks/model";
+import { reviewLink, type Diagnostic, type Status, type Task } from "./tasks/model";
 import { parseTask, parseTasksIndex } from "./tasks/parse";
 import {
   allowedHumanStatuses,
@@ -215,7 +215,9 @@ export class Orchestrator {
         const parsed = parseTask(text, id);
         if (!parsed.ok || parsed.value.status !== from) return undefined;
         wrote = true;
-        return editTask(text, parsed.value.statusLine, { status: to, updates, questions: questions.map((q) => inertLine(q)) });
+        // The review link lands in the same write as the status (D-027).
+        const metadata = to === "review" ? [{ key: "review", value: reviewLink(id) }] : [];
+        return editTask(text, parsed.value.statusLine, { status: to, updates, metadata, questions: questions.map((q) => inertLine(q)) });
       });
       if (result.status === "failed") this.writeFailed(`tasks/${id}.md`, result.reason);
       this.pass();

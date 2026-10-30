@@ -13,8 +13,8 @@
   ],
   "capabilities": {
     "untrustedWorkspaces": {
-      "supported": false,
-      "description": "Excaliharness runs a worker that reads and writes the repository's task files, so it only runs in trusted workspaces."
+      "supported": "limited",
+      "description": "In an untrusted workspace Excaliharness starts no worker and offers no commands; it only opens the diff of a task review it opened that workspace for."
     }
   },
   "activationEvents": [
@@ -62,6 +62,11 @@
         "command": "excaliharness.openTaskAt",
         "title": "Open Task at Line",
         "category": "Excaliharness"
+      },
+      {
+        "command": "excaliharness.openReview",
+        "title": "Open Task Review",
+        "category": "Excaliharness"
       }
     ],
     "menus": {
@@ -97,6 +102,10 @@
         {
           "command": "excaliharness.openTaskAt",
           "when": "false"
+        },
+        {
+          "command": "excaliharness.openReview",
+          "when": "excaliharness.active && resourcePath =~ /[\\\\/]tasks[\\\\/]T-[0-9]+\\.md$/"
         }
       ]
     },

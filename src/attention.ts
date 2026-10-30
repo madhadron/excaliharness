@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { attentionAction, attentionMessage } from "./attentionText";
+import { OPEN_REVIEW_COMMAND } from "./review";
 import type { TaskAttention } from "./worker/protocol";
 
 export const OPEN_TASK_COMMAND = "excaliharness.openTaskAt";
@@ -26,10 +27,8 @@ export function showAttention(root: string, a: TaskAttention, output: vscode.Log
   const action = attentionAction(a);
   const failed = (error: unknown) => output.warn(`couldn't open ${a.id}: ${error instanceof Error ? error.message : String(error)}`);
   vscode.window.showInformationMessage(`${message}: ${a.title}`, action).then((choice) => {
-    if (choice === "Open review" && a.worktree) {
-      // A new window on a folder VS Code doesn't trust yet: its tasks and
-      // workspace settings stay off until the human trusts it (D-084).
-      vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(a.worktree), { forceNewWindow: true }).then(undefined, failed);
+    if (choice === "Open review") {
+      vscode.commands.executeCommand(OPEN_REVIEW_COMMAND, { id: a.id }).then(undefined, failed);
     } else if (choice === "Open task") {
       vscode.commands.executeCommand(OPEN_TASK_COMMAND, path.join(root, a.path), a.status === "needs-decision" ? a.questionsLine : undefined).then(undefined, failed);
     }
