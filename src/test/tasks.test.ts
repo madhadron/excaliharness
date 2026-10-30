@@ -1,5 +1,6 @@
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ExcaliharnessApi } from "../extension";
@@ -112,6 +113,38 @@ suite("review", () => {
       lenses.map((l) => [l.range.start.line, l.command?.title, l.command?.arguments]),
       [[line, "Open review", [{ id: "T-004" }]]],
     );
+  });
+});
+
+suite("receiving a review", () => {
+  test("the window on a review's worktree takes it and opens the diff, leaving out symbolic links (D-027)", async () => {
+    const ext = await api();
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-base-"));
+    fs.mkdirSync(path.join(baseDir, "tasks"));
+    fs.writeFileSync(path.join(baseDir, "tasks", "T-002.md"), "# T-002: Old title\n");
+    fs.symlinkSync(file("tasks/T-001.md"), file("link.md"));
+    try {
+      // This test window stands in for the worktree's.
+      const review = {
+        id: "T-004",
+        worktree: root(),
+        baseDir,
+        base: "0123456789abcdef",
+        files: [
+          { path: "tasks/T-002.md", change: "modified" as const },
+          { path: "link.md", change: "added" as const },
+        ],
+        truncated: false,
+      };
+      assert.equal(await ext.receiveReview(review), true);
+      const tabs = () => vscode.window.tabGroups.all.flatMap((g) => g.tabs);
+      await waitFor(() => tabs().find((t) => t.label.startsWith("T-004: changes since 0123456789ab")), "the diff editor");
+      // A review for another folder isn't this window's to take.
+      assert.equal(await ext.receiveReview({ ...review, id: "T-005", worktree: baseDir }), false);
+    } finally {
+      fs.rmSync(file("link.md"), { force: true });
+      fs.rmSync(baseDir, { recursive: true, force: true });
+    }
   });
 });
 

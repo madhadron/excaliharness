@@ -2,13 +2,15 @@
 // the review, leaves it in global state and opens the worktree in a new
 // window. VS Code doesn't trust that folder, so its tasks and workspace
 // settings stay off (D-084); there the extension runs in limited mode and
-// only takes the review left for it and opens the diff.
+// only takes the review left for it and opens the diff. A worktree window
+// never orchestrates, even once trusted (see extension.ts).
 import * as fs from "node:fs";
 import * as vscode from "vscode";
-import { reviewIdOf, taskIdOf } from "./editorText";
-import { addPending, diffEntries, takePending, type FileKind, type PendingReview } from "./reviewText";
+import { reviewIdOf } from "./editorText";
+import { addPending, commandTaskId, diffEntries, dropPending, takePending, type FileKind, type PendingReview } from "./reviewText";
+import { isReviewInfo, type ReviewInfo } from "./worker/protocol";
 import { printableLine } from "./worker/runner/clean";
-import { isReviewInfo } from "./worker/protocol";
+import { EXTENSION_ID } from "./worker/tasks/model";
 import type { WorkerClient } from "./workerClient";
 
 export const OPEN_REVIEW_COMMAND = "excaliharness.openReview";
@@ -37,7 +39,8 @@ function fileKind(file: string): FileKind {
 // Takes the review left for this window, if its only folder is that
 // review's worktree, and opens the diff. Runs in any window, trusted or not.
 export class ReviewReceiver implements vscode.Disposable {
-  private checking = false;
+  // Checks run one at a time, each seeing what the one before left.
+  private queue: Promise<unknown> = Promise.resolve();
   private readonly subscription: vscode.Disposable;
 
   constructor(
@@ -45,34 +48,40 @@ export class ReviewReceiver implements vscode.Disposable {
     private readonly output: vscode.LogOutputChannel,
   ) {
     // A window already open on the worktree is focused, not started again.
+    // VS Code shares global state between windows, so it sees the review.
     this.subscription = vscode.window.onDidChangeWindowState((s) => {
       if (s.focused) void this.check();
     });
   }
 
-  async check(): Promise<boolean> {
+  // Whether this window took a review (and opened, or tried to open, it).
+  check(): Promise<boolean> {
+    const run = this.queue.then(() => this.checkNow());
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async checkNow(): Promise<boolean> {
     const folders = vscode.workspace.workspaceFolders;
     const folder = folders?.length === 1 ? folders[0] : undefined;
     const here = folder?.uri.scheme === "file" ? realpath(folder.uri.fsPath) : undefined;
-    if (this.checking || !here) return false;
-    this.checking = true;
+    if (!here) return false;
+    const { review } = takePending(this.state.get(PENDING_KEY), (worktree) => realpath(worktree) === here, Date.now());
+    if (!review) return false;
     try {
-      const { review, rest } = takePending(this.state.get(PENDING_KEY), (worktree) => realpath(worktree) === here, Date.now());
-      if (!review) return false;
-      await this.state.update(PENDING_KEY, rest);
       await showDiff(review, here, this.output);
-      return true;
     } catch (error) {
-      this.output.warn(`couldn't open the review: ${message(error)}`);
-      void vscode.window.showErrorMessage(`Couldn't open the review: ${message(error)}.`);
-      return true;
+      this.output.warn(`couldn't open the review of ${review.id}: ${message(error)}`);
+      void vscode.window.showErrorMessage(`Couldn't open the review of ${review.id}: ${message(error)}.`);
     } finally {
-      this.checking = false;
+      // Only now: a window that goes away first leaves it for the next one.
+      await this.state.update(PENDING_KEY, dropPending(this.state.get(PENDING_KEY), review, Date.now()));
     }
+    return true;
   }
 
   // Leaves a review for the window on its worktree.
-  async leave(review: Omit<PendingReview, "at">): Promise<void> {
+  async leave(review: ReviewInfo): Promise<void> {
     await this.state.update(PENDING_KEY, addPending(this.state.get(PENDING_KEY), review, Date.now()));
   }
 
@@ -102,10 +111,18 @@ async function showDiff(review: PendingReview, worktree: string, output: vscode.
   await vscode.commands.executeCommand("vscode.changes", `${review.id}: changes since ${review.base.slice(0, 12)}`, resources);
 }
 
-// The trusted window's side: the command, and the vscode:// link (D-027).
-export function registerOpenReview(root: string, worker: WorkerClient, receiver: ReviewReceiver): vscode.Disposable[] {
-  const open = async (id: string) => {
+export type OpenReview = (id: string) => Promise<void>;
+
+// The trusted window's side: has the worker prepare the review, leaves it,
+// and opens the worktree.
+export function reviewOpener(worker: WorkerClient, receiver: ReviewReceiver): OpenReview {
+  return async (id) => {
     try {
+      // With Workspace Trust off, every folder opens trusted, and the
+      // worktree's tasks and settings would apply (D-084).
+      if (vscode.workspace.getConfiguration("security.workspace.trust").get<boolean>("enabled", true) === false) {
+        throw new Error("Workspace Trust is turned off (security.workspace.trust.enabled), so the worktree would open with its own tasks and settings. Turn it on to open reviews");
+      }
       const review = await worker.request("review/prepare", { id }, PREPARE_TIMEOUT_MS);
       if (!isReviewInfo(review) || review.id !== id) throw new Error("the worker's answer wasn't a review");
       await receiver.leave(review);
@@ -116,23 +133,30 @@ export function registerOpenReview(root: string, worker: WorkerClient, receiver:
       void vscode.window.showErrorMessage(`Couldn't open the review of ${id}: ${message(error)}.`);
     }
   };
-  return [
-    vscode.commands.registerCommand(OPEN_REVIEW_COMMAND, (arg?: { id?: unknown }) => {
-      const given = typeof arg?.id === "string" && /^T-\d+$/.test(arg.id) ? arg.id : undefined;
-      const active = vscode.window.activeTextEditor?.document.uri.fsPath;
-      const id = given ?? (active ? taskIdOf(root, active) : undefined);
+}
+
+export function registerReviewCommand(root: string, open: OpenReview): vscode.Disposable {
+  return vscode.commands.registerCommand(OPEN_REVIEW_COMMAND, (arg?: unknown) => {
+    const id = commandTaskId(root, arg, vscode.window.activeTextEditor?.document.uri.fsPath);
+    if (id) return open(id);
+    void vscode.window.showWarningMessage("Open a task file (tasks/T-NNN.md) to open its review.");
+  });
+}
+
+// The vscode:// review link (D-027), handled in every window; only a
+// trusted window on the repository can open the review.
+export function registerReviewLinks(opener: () => OpenReview | undefined): vscode.Disposable {
+  return vscode.window.registerUriHandler({
+    handleUri: (uri) => {
+      const id = reviewIdOf(uri.path);
+      const open = opener();
       if (!id) {
-        void vscode.window.showWarningMessage("Open a task file (tasks/T-NNN.md) to open its review.");
-        return;
+        void vscode.window.showWarningMessage(`Excaliharness links open a task's review: vscode://${EXTENSION_ID}/review/T-NNN.`);
+      } else if (!open) {
+        void vscode.window.showWarningMessage(`VS Code sent the link to ${id}'s review to a window that isn't orchestrating its repository. Open it from that repository's window.`);
+      } else {
+        return open(id);
       }
-      return open(id);
-    }),
-    vscode.window.registerUriHandler({
-      handleUri: (uri) => {
-        const id = reviewIdOf(uri.path);
-        if (id) return open(id);
-        void vscode.window.showWarningMessage("Excaliharness links open a task's review: vscode://madhadron.excaliharness/review/T-NNN.");
-      },
-    }),
-  ];
+    },
+  });
 }

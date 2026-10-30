@@ -295,21 +295,22 @@ export class Worktrees {
   // branch, for the review (D-027). Read from commits in the main repository,
   // never from the worktree. Gitlinks and names git would never write are
   // left out.
-  async changedFiles(taskId: string): Promise<{ base: string; files: ChangedFile[]; truncated: boolean }> {
+  async changedFiles(taskId: string, max = MAX_REVIEW_FILES): Promise<{ base: string; files: ChangedFile[]; truncated: boolean }> {
     const base = await this.startCommit(taskId);
     // -z: ":<modes> <ids> <status>\0<path>\0" per file, paths as they are.
     const listed = await this.exec(["diff", "--raw", "-z", "--no-renames", "--no-abbrev", "--ignore-submodules=all", base, `refs/heads/${this.branch(taskId)}`], this.root);
     if (listed.code !== 0) throw new Error(`git diff failed:\n${tail(listed)}`);
     const fields = listed.stdout.split("\0");
-    // A cut-off listing ends in a partial entry.
-    if (listed.truncated) fields.splice(-2);
+    // A cut-off listing ends in a partial entry: a header alone, or a header
+    // and part of its path.
+    if (listed.truncated) fields.splice(fields.length % 2 === 0 ? -2 : -1);
     const files: ChangedFile[] = [];
     let truncated = listed.truncated === true;
     for (let i = 0; i + 1 < fields.length; i += 2) {
       const [, newMode, status] = /^:\d{6} (\d{6}) \S+ \S+ ([ADMT])$/.exec(fields[i] ?? "") ?? [];
       const file = fields[i + 1] ?? "";
       if (!status || newMode === "160000" || !isPlainRelative(file)) continue;
-      if (files.length >= MAX_REVIEW_FILES) {
+      if (files.length >= max) {
         truncated = true;
         break;
       }

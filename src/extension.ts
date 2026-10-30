@@ -6,10 +6,11 @@ import { ACCOUNT_COMMAND, AuthManager, SIGN_IN_COMMAND, SIGN_OUT_COMMAND } from 
 import { registerCommands, RESTART_COMMAND } from "./commands";
 import { TaskDiagnostics } from "./diagnostics";
 import { WikilinkProvider } from "./links";
-import { registerOpenReview, ReviewReceiver } from "./review";
+import { registerReviewCommand, registerReviewLinks, reviewOpener, ReviewReceiver, type OpenReview } from "./review";
+import { isTaskWorktree } from "./reviewText";
 import { StatusLensProvider } from "./statusLens";
 import { TaskState } from "./taskState";
-import type { TasksSnapshot } from "./worker/protocol";
+import type { ReviewInfo, TasksSnapshot } from "./worker/protocol";
 import { WorkerClient } from "./workerClient";
 
 // Returned from activate() so integration tests can reach the worker.
@@ -17,6 +18,8 @@ export interface ExcaliharnessApi {
   ping(timeoutMs?: number): Promise<unknown>;
   snapshot(): TasksSnapshot | undefined;
   signedIn(): boolean;
+  // Leaves a review for this window and takes it, as a worktree window does.
+  receiveReview(review: ReviewInfo): Promise<boolean>;
 }
 
 function findRoot(): string | undefined {
@@ -25,36 +28,60 @@ function findRoot(): string | undefined {
     .find((dir) => fs.existsSync(path.join(dir, "TASKS.md")));
 }
 
+// What every window has, trusted or not.
+interface Shared {
+  output: vscode.LogOutputChannel;
+  receiver: ReviewReceiver;
+  // Disposed before the output channel the trusted part logs to.
+  subscriptions: vscode.Disposable[];
+  // Set once this window orchestrates its repository.
+  links: { open?: OpenReview };
+}
+
 export function activate(context: vscode.ExtensionContext): ExcaliharnessApi | undefined {
   const output = vscode.window.createOutputChannel("Excaliharness", { log: true });
-  // In every window, trusted or not: a review the trusted window left for
-  // this one (D-027).
+  // A review the trusted window left for this one (D-027).
   const receiver = new ReviewReceiver(context.globalState, output);
-  // Disposed in order: what the trusted part starts goes before the channel
-  // it logs to.
-  const trusted: vscode.Disposable[] = [];
-  context.subscriptions.push({ dispose: () => trusted.forEach((d) => d.dispose()) }, receiver, output);
+  const shared: Shared = { output, receiver, subscriptions: [], links: {} };
+  context.subscriptions.push(
+    { dispose: () => shared.subscriptions.forEach((d) => d.dispose()) },
+    registerReviewLinks(() => shared.links.open),
+    receiver,
+    output,
+  );
   void receiver.check();
-  if (vscode.workspace.isTrusted) return activateTrusted(context, output, receiver, trusted);
+  // A task's worktree holds a copy of TASKS.md and of everything an agent
+  // wrote: orchestrating it would take the agent's Compose file and gates
+  // for the human's. Only its review is shown, even once it is trusted.
+  const worktree = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath).find((dir) => isTaskWorktree(dir) || isTaskWorktree(realpathOr(dir)));
+  if (worktree) {
+    output.info(`${worktree} is a task's worktree, so nothing is orchestrated in this window.`);
+    return undefined;
+  }
+  if (vscode.workspace.isTrusted) return activateTrusted(context, shared);
   // Limited mode (package.json): no worker, watcher or commands in a folder
-  // VS Code doesn't trust, such as a review's worktree.
+  // VS Code doesn't trust.
   let started = false;
-  trusted.push(
+  shared.subscriptions.push(
     vscode.workspace.onDidGrantWorkspaceTrust(() => {
       if (started) return;
       started = true;
-      activateTrusted(context, output, receiver, trusted);
+      activateTrusted(context, shared);
     }),
   );
   return undefined;
 }
 
-function activateTrusted(
-  context: vscode.ExtensionContext,
-  output: vscode.LogOutputChannel,
-  receiver: ReviewReceiver,
-  subscriptions: vscode.Disposable[],
-): ExcaliharnessApi | undefined {
+function realpathOr(dir: string): string {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+function activateTrusted(context: vscode.ExtensionContext, shared: Shared): ExcaliharnessApi | undefined {
+  const { output, receiver, subscriptions } = shared;
   const root = findRoot();
   if (!root) {
     output.info("No workspace folder contains TASKS.md; nothing to orchestrate.");
@@ -109,6 +136,9 @@ function activateTrusted(
   void signIn.pushToken();
   void worker.request("settings/update", { maxParallelTasks: maxParallelTasks() }).catch(() => undefined);
 
+  const openReview = reviewOpener(worker, receiver);
+  shared.links.open = openReview;
+
   const markdown: vscode.DocumentSelector = { scheme: "file", language: "markdown" };
   const lens = new StatusLensProvider(root, state);
   // The worker goes first so it is stopped before the channel it logs to.
@@ -121,7 +151,12 @@ function activateTrusted(
     vscode.languages.registerCodeLensProvider({ ...markdown, pattern: new vscode.RelativePattern(root, "tasks/T-*.md") }, lens),
     vscode.languages.registerCodeLensProvider({ ...markdown, pattern: new vscode.RelativePattern(root, "TASKS.md") }, lens),
     ...registerCommands(root, worker, state),
-    ...registerOpenReview(root, worker, receiver),
+    registerReviewCommand(root, openReview),
+    {
+      dispose: () => {
+        shared.links.open = undefined;
+      },
+    },
     signIn,
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("excaliharness.maxParallelTasks")) {
@@ -138,6 +173,10 @@ function activateTrusted(
     ping: (timeoutMs) => worker.request("ping", undefined, timeoutMs),
     snapshot: () => state.snapshot,
     signedIn: () => signIn.isSignedIn,
+    receiveReview: async (review) => {
+      await receiver.leave(review);
+      return receiver.check();
+    },
   };
 }
 

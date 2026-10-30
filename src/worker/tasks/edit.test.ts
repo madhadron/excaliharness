@@ -35,6 +35,13 @@ describe("editTask", () => {
     expect(editTask(text, 3, { metadata: [{ key: "review", value: "new" }], updates: [] })).toBe("# T-1: x\n\n* review: new\n* status: draft\n* note: kept\n\nBody\n");
   });
 
+  it("removes a metadata item, before or after the status line, and only that one", () => {
+    const text = "# T-1: x\n\n* review: old\n* status: review\n* note: kept\n\nBody\n";
+    expect(editTask(text, 3, { status: "done", metadata: [{ key: "review" }, { key: "note", value: "new" }], updates: [] })).toBe("# T-1: x\n\n* status: done\n* note: new\n\nBody\n");
+    expect(editTask("# T-1: x\n* status: draft\n* review: y\n", 1, { metadata: [{ key: "review" }], updates: [] })).toBe("# T-1: x\n* status: draft\n");
+    expect(editTask(text, 3, { metadata: [{ key: "absent" }], updates: [] })).toBe(text);
+  });
+
   it("adds a metadata item after a status line that ends the file", () => {
     expect(editTask("# T-1: x\n* status: draft", 1, { metadata: [{ key: "review", value: "y" }], updates: [] })).toBe("# T-1: x\n* status: draft\n* review: y");
   });

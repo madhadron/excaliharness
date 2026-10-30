@@ -89,16 +89,21 @@ const runner =
       })
     : undefined;
 if (!runner) log("no Docker socket found; tasks won't run until the window is reloaded with Docker running");
+// Reviews need only git, so they work without Docker and in a read-only
+// window.
+const reviews = new Reviews(new Worktrees(run, root, path.join(stateDir, "worktrees"), log), path.join(stateDir, "review"), log);
 const orchestrator = new Orchestrator(root, {
-  notify: send,
+  notify: (notification) => {
+    send(notification);
+    // Base copies are kept only while the task can be reviewed.
+    if (notification.method === "tasks/changed") {
+      reviews.sweep(new Set(notification.params.tasks.filter((t) => t.status === "review" || t.status === "needs-human").map((t) => t.id)));
+    }
+  },
   log,
   ...(runner ? { runner } : {}),
   ...(Number.isInteger(maxParallelTasks) && maxParallelTasks >= 1 ? { maxParallelTasks } : {}),
 });
-
-// Reviews need only git, so they work without Docker and in a read-only
-// window.
-const reviews = new Reviews(new Worktrees(run, root, path.join(stateDir, "worktrees"), log), path.join(stateDir, "review"));
 
 // Docker is looked up afresh for each sign-in, so starting Docker after the
 // extension just works. `signIn` is the service of the current (or last) one.
@@ -136,7 +141,11 @@ process.on("message", (message: unknown) => {
       waiting.clear();
     },
     "settings/update": ({ maxParallelTasks }) => orchestrator.setMaxParallelTasks(maxParallelTasks),
-    "review/prepare": ({ id }) => reviews.prepare(id),
+    "review/prepare": async ({ id }) => {
+      const refusal = await orchestrator.reviewRefusal(id);
+      if (refusal) throw new Error(refusal);
+      return reviews.prepare(id);
+    },
   }).then((response) => response && send(response));
 });
 

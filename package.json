@@ -18,7 +18,9 @@
     }
   },
   "activationEvents": [
-    "workspaceContains:TASKS.md"
+    "workspaceContains:TASKS.md",
+    "onUri",
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {

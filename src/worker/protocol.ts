@@ -100,7 +100,8 @@ export interface TaskAttention {
   status: "review" | "needs-human" | "needs-decision";
   // The task's file, relative to the repository root.
   path: string;
-  // The task's worktree, for "Open review".
+  // The task's worktree. Only whether there is one is used: without one
+  // there is nothing to review, so the notification offers "Open task".
   worktree?: string;
   // The 0-based line of ## Questions, for "Open task".
   questionsLine?: number;

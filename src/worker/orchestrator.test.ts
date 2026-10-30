@@ -189,6 +189,13 @@ describe("setStatus", () => {
     return { id: "T-1", to: "ready" as const, expectedStatus: status as "draft", expectedHash: hashOf(text) };
   };
 
+  it("removes the review link when the task leaves review (D-027)", async () => {
+    writeTask("T-1", "review", ["* review: [Open review](vscode://madhadron.excaliharness/review/T-1)"], [recorded("in-implementation", "review")]);
+    const { orchestrator } = await start();
+    await orchestrator.setStatus({ ...params("review"), to: "done", expectedStatus: "review" });
+    expect(read("tasks/T-1.md")).toMatch(/^\* status: done\n\n## Updates/m);
+  });
+
   it("marks a draft ready, recording it, and publishes before answering", async () => {
     writeTask("T-1", "draft");
     const { orchestrator, notes } = await start();
@@ -334,6 +341,28 @@ describe("running tasks", () => {
     });
     await settle(orchestrator, () => runs.length > 0);
     expect(runs[0]?.fromNeedsHuman).toBe(true);
+  });
+
+  it("opens a review only for a task in review or needs-human whose agents aren't running", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    writeTask("T-2", "review", [], [recorded("in-implementation", "review")]);
+    writeTask("T-3", "draft");
+    let finish: (outcome: RunOutcome) => void = () => {};
+    const { orchestrator } = await startWith(() => new Promise((resolve) => (finish = resolve)));
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("status: in-implementation"));
+    expect(await orchestrator.reviewRefusal("T-1")).toBe("T-1 is in-implementation; its review opens once it is in review or needs you");
+    expect(await orchestrator.reviewRefusal("T-2")).toBeUndefined();
+    expect(await orchestrator.reviewRefusal("T-3")).toMatch(/T-3 is draft/);
+    expect(await orchestrator.reviewRefusal("T-9")).toBe("T-9 doesn't exist or can't be read");
+    finish({ kind: "needs-human", reason: "stuck", notes: [] });
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("status: needs-human"));
+    // The scheduler lets go of the task just after its status is written.
+    let refusal = await orchestrator.reviewRefusal("T-1");
+    for (let i = 0; i < 50 && refusal !== undefined; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      refusal = await orchestrator.reviewRefusal("T-1");
+    }
+    expect(refusal).toBeUndefined();
   });
 
   it("sends a blocked task to needs-human with the reason", async () => {

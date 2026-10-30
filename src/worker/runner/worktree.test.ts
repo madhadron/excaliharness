@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { run } from "./exec";
+import { run, type Run } from "./exec";
 import { copiedFiles, copiedPaths, isBuildInput, isPlainRelative, Worktrees } from "./worktree";
 
 let root: string;
@@ -104,6 +104,25 @@ describe("Worktrees", () => {
     expect(fs.readFileSync(path.join(out, "src", "-x.txt"), "utf8")).toBe("dash\n");
     expect(fs.existsSync(path.join(out, "stale.txt"))).toBe(false);
     expect(fs.existsSync(`${out}.index`)).toBe(false);
+  });
+
+  it("says when there are more changed files than it lists", async () => {
+    const w = worktrees();
+    const dir = await w.ensure("T-1");
+    for (const name of ["x", "y", "z"]) fs.writeFileSync(path.join(dir, name), name);
+    await w.commit("T-1", "implementer", "T-1: three");
+    expect(await w.changedFiles("T-1", 2)).toMatchObject({ files: [{ path: "x" }, { path: "y" }], truncated: true });
+    expect((await w.changedFiles("T-1", 3)).truncated).toBe(false);
+  });
+
+  it("drops the partial last entry of a listing git cut off", async () => {
+    const listing = (stdout: string): Run => (command, args, options) =>
+      args.includes("--raw") ? Promise.resolve({ code: 0, stdout, stderr: "", truncated: true }) : run(command, args, options);
+    await worktrees().ensure("T-1");
+    for (const cut of [":100644 100644 a b M\0one.txt\0:100644 100644 c d M\0tw", ":100644 100644 a b M\0one.txt\0:100644 10"]) {
+      const listed = await new Worktrees(listing(cut), root, path.join(state, "worktrees")).changedFiles("T-1");
+      expect(listed).toMatchObject({ files: [{ path: "one.txt", change: "modified" }], truncated: true });
+    }
   });
 
   it("tells plain relative paths from others", () => {

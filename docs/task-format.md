@@ -36,8 +36,10 @@ it are in [decisions.md](decisions.md) (D-005, D-009, D-011, D-030 to D-047).
     - `pipeline`: a pipeline name from `TASKS.md`.
     - `kind`: `infrastructure` marks a task every other task waits on.
     - `review`: written by the orchestrator when the task enters `review`,
-      as `[Open review](vscode://madhadron.excaliharness/review/T-NNN)`.
-      The link opens the task's worktree, with its changes, in VS Code.
+      as `[Open review](vscode://madhadron.excaliharness/review/T-NNN)`, and
+      removed with the next status change. The link opens the task's
+      worktree, with its changes, in VS Code. Tasks that reached `review`
+      before this feature don't have it; the CodeLens still works for them.
     - `design`: a link, written by the orchestrator in a later feature.
 - **Sections**: `## Description`, `## Context`, `## Issue`, `## Expectation`,
   `## Questions`, `## Updates`; names are case-sensitive. Headings, questions
@@ -100,7 +102,13 @@ it are in [decisions.md](decisions.md) (D-005, D-009, D-011, D-030 to D-047).
   opens the task's worktree in a new, untrusted VS Code window, with a diff of
   every file its branch changed since it left your branch. The left side is
   that starting commit, the right side the worktree's files, which you can
-  edit. Files that are symbolic links in the worktree aren't shown.
+  edit. Files that are symbolic links in the worktree aren't shown. A review
+  opens only for a task in `review` or `needs-human` with no agent running,
+  and not while Workspace Trust is turned off
+  (`security.workspace.trust.enabled`), since the worktree would then open
+  trusted. A window on a worktree never orchestrates, even once trusted. The
+  copies of the starting commit's files are removed when the task leaves
+  `review` and `needs-human`.
 - Changing a running task's status by hand stops it and keeps your status.
   If Claude rejects the sign-in, the task stays `in-implementation` and
   resumes after you sign in again.

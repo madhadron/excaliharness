@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addPending, diffEntries, PENDING_TTL_MS, takePending, type FileKind } from "./reviewText";
+import { addPending, commandTaskId, diffEntries, dropPending, isTaskWorktree, PENDING_TTL_MS, takePending, type FileKind } from "./reviewText";
 import type { ReviewInfo } from "./worker/protocol";
 
 const review = (id: string): ReviewInfo => ({
@@ -34,6 +34,47 @@ describe("pending reviews", () => {
   it("replaces an earlier review of the same worktree", () => {
     const stored = addPending(addPending(undefined, review("T-1"), 1_000), { ...review("T-1"), base: "def" }, 2_000);
     expect(Object.values(stored).map((r) => [r.base, r.at])).toEqual([["def", 2_000]]);
+  });
+});
+
+describe("dropPending", () => {
+  it("forgets the review taken, but not one left again since", () => {
+    const stored = addPending(undefined, review("T-1"), 1_000);
+    const taken = { ...review("T-1"), at: 1_000 };
+    expect(dropPending(stored, taken, 2_000)).toEqual({});
+    const again = addPending(stored, review("T-1"), 1_500);
+    expect(Object.values(dropPending(again, taken, 2_000)).map((r) => r.at)).toEqual([1_500]);
+  });
+});
+
+describe("isTaskWorktree", () => {
+  it("knows the worker's worktree folders and what is inside them, whatever the case", () => {
+    const storage = "/Users/h/Library/Application Support/Code/User/workspaceStorage/abc";
+    expect(isTaskWorktree(`${storage}/madhadron.excaliharness/worktrees/T-7`)).toBe(true);
+    expect(isTaskWorktree(`${storage}/madhadron.excaliharness/worktrees/T-7/src`)).toBe(true);
+    expect(isTaskWorktree(`${storage}/Madhadron.Excaliharness/Worktrees/t-7`)).toBe(true);
+    expect(isTaskWorktree("/home/h/globalStorage/madhadron.excaliharness/worktrees/T-12")).toBe(true);
+  });
+
+  it("leaves other folders alone", () => {
+    expect(isTaskWorktree("/home/h/repo")).toBe(false);
+    expect(isTaskWorktree("/s/madhadron.excaliharness/worktrees")).toBe(false);
+    expect(isTaskWorktree("/s/madhadron.excaliharness/review/T-1")).toBe(false);
+    expect(isTaskWorktree("/s/other/worktrees/T-1")).toBe(false);
+  });
+});
+
+describe("commandTaskId", () => {
+  it("takes the id it is given, or the task file in the editor", () => {
+    expect(commandTaskId("/repo", { id: "T-3" }, "/repo/tasks/T-1.md")).toBe("T-3");
+    expect(commandTaskId("/repo", undefined, "/repo/tasks/T-1.md")).toBe("T-1");
+    expect(commandTaskId("/repo", {}, "/repo/tasks/T-1.md")).toBe("T-1");
+  });
+
+  it("refuses a malformed id rather than falling back to the editor", () => {
+    expect(commandTaskId("/repo", { id: "../T-3" }, "/repo/tasks/T-1.md")).toBeUndefined();
+    expect(commandTaskId("/repo", undefined, "/repo/README.md")).toBeUndefined();
+    expect(commandTaskId("/repo", undefined, undefined)).toBeUndefined();
   });
 });
 

@@ -68,6 +68,12 @@ export function readyFromNeedsHuman(task: Task): boolean {
   return false;
 }
 
+// The review link, written with every status change so that it is there
+// exactly while the task is in review (D-027).
+function reviewItem(id: string, to: Status): TaskEdit["metadata"] {
+  return [{ key: "review", value: to === "review" ? reviewLink(id) : undefined }];
+}
+
 // How long to wait before trying again when a task couldn't start (Docker
 // not running, not signed in), so the human isn't asked over and over.
 const PREFLIGHT_BACKOFF_MS = 60_000;
@@ -215,9 +221,7 @@ export class Orchestrator {
         const parsed = parseTask(text, id);
         if (!parsed.ok || parsed.value.status !== from) return undefined;
         wrote = true;
-        // The review link lands in the same write as the status (D-027).
-        const metadata = to === "review" ? [{ key: "review", value: reviewLink(id) }] : [];
-        return editTask(text, parsed.value.statusLine, { status: to, updates, metadata, questions: questions.map((q) => inertLine(q)) });
+        return editTask(text, parsed.value.statusLine, { status: to, updates, metadata: reviewItem(id, to), questions: questions.map((q) => inertLine(q)) });
       });
       if (result.status === "failed") this.writeFailed(`tasks/${id}.md`, result.reason);
       this.pass();
@@ -352,6 +356,22 @@ export class Orchestrator {
     return isParked(task, this.accepted);
   }
 
+  // Why the task's review can't open now, if it can't: only a task in review
+  // or needs-human with none of its agents running, so no agent can change
+  // the worktree while the human looks at it.
+  reviewRefusal(id: string): Promise<string | undefined> {
+    return this.enqueue(() => {
+      const read = readFile(this.taskPath(id));
+      if (read.status !== "ok") return `${id} doesn't exist or can't be read`;
+      const parsed = parseTask(read.content.text, id);
+      if (!parsed.ok) return `${id}.md doesn't parse`;
+      const { status } = parsed.value;
+      if (status !== "review" && status !== "needs-human") return `${id} is ${status}; its review opens once it is in review or needs you`;
+      if (this.scheduler?.runningIds.includes(id)) return `${id}'s agents are still running`;
+      return undefined;
+    });
+  }
+
   list(): Promise<TasksSnapshot> {
     return this.enqueue(() => this.lastSnapshot);
   }
@@ -388,7 +408,7 @@ export class Orchestrator {
           changedUnderneath = true;
           return undefined;
         }
-        return editTask(text, task.statusLine, { status: params.to, updates });
+        return editTask(text, task.statusLine, { status: params.to, updates, metadata: reviewItem(task.id, params.to) });
       });
       if (changedUnderneath) throw new Error(`${params.id}.md changed while marking it; try again`);
       if (result.status === "failed") throw new Error(`couldn't write ${params.id}.md: ${result.reason}`);
@@ -664,6 +684,7 @@ export class Orchestrator {
         this.retryAt.delete(change.id);
       } else {
         edit.status = change.to;
+        edit.metadata = reviewItem(change.id, change.to);
         edit.updates.push(this.entry("orchestrator", `status: ${change.from} → ${change.to} · ${change.reason}`));
       }
       edits.set(change.id, edit);

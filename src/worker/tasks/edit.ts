@@ -12,8 +12,8 @@ export interface TaskEdit {
   // Lines to append to ## Updates, in order.
   updates: string[];
   // Metadata items to set: each replaces the item with its key, or is added
-  // at the end of the metadata list.
-  metadata?: { key: string; value: string }[];
+  // at the end of the metadata list. Without a value, the item is removed.
+  metadata?: { key: string; value?: string }[];
   // Questions to add to ## Questions in the D-011 form, unanswered.
   questions?: string[];
 }
@@ -31,7 +31,8 @@ export function editTask(text: string, statusLine: number, edit: TaskEdit): stri
     if (!prefix?.[1]) throw new Error(`line ${statusLine} is not a status line`);
     replaceLines(file, statusLine, statusLine + 1, [`${prefix[1]} ${edit.status}`]);
   }
-  for (const { key, value } of edit.metadata ?? []) setMetadata(file, statusLine, key, value);
+  let at = statusLine;
+  for (const { key, value } of edit.metadata ?? []) at = setMetadata(file, at, key, value);
   if (edit.questions?.length) {
     const lines = edit.questions.flatMap((q, i) => [...(i ? [""] : []), ...questionLines(q)]);
     const sections = parseSections(file.lines);
@@ -66,20 +67,21 @@ export function editTask(text: string, statusLine: number, edit: TaskEdit): stri
 }
 
 // The metadata list is the run of `* key: value` lines around the status line.
-function setMetadata(file: TextFile, statusLine: number, key: string, value: string): void {
+// Returns where the status line is afterwards.
+function setMetadata(file: TextFile, statusLine: number, key: string, value: string | undefined): number {
   if (!STATUS_PREFIX.test(file.lines[statusLine] ?? "")) throw new Error(`line ${statusLine} is not a status line`);
   let start = statusLine;
   while (start > 1 && META_ITEM.test(file.lines[start - 1] ?? "")) start--;
   let end = statusLine + 1;
   while (end < file.lines.length && META_ITEM.test(file.lines[end] ?? "")) end++;
-  const line = `* ${key}: ${value}`;
   for (let i = start; i < end; i++) {
-    if (META_ITEM.exec(file.lines[i] ?? "")?.[1] === key) {
-      replaceLines(file, i, i + 1, [line]);
-      return;
-    }
+    if (META_ITEM.exec(file.lines[i] ?? "")?.[1] !== key) continue;
+    if (value !== undefined) replaceLines(file, i, i + 1, [`* ${key}: ${value}`]);
+    else replaceLines(file, i, i + 1, []);
+    return value === undefined && i < statusLine ? statusLine - 1 : statusLine;
   }
-  insertLines(file, end, [line]);
+  if (value !== undefined) insertLines(file, end, [`* ${key}: ${value}`]);
+  return statusLine;
 }
 
 // Replaces the body of ## Index with `entries`, adding the section at the end
