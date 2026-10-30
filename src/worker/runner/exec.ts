@@ -94,7 +94,8 @@ export const run: Run = (command, args, options = {}) =>
         }
         if (!options.onLine) return;
         const parts = ((partials[index] ?? "") + text).split(/\r?\n/);
-        partials[index] = (parts.pop() ?? "").slice(-MAX_LINE);
+        // The start of an overlong line, which says what it is.
+        partials[index] = (parts.pop() ?? "").slice(0, MAX_LINE);
         for (const line of parts) options.onLine(line.slice(0, MAX_LINE));
       };
     };

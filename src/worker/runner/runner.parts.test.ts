@@ -12,7 +12,7 @@ import { checkScript, interpret } from "./capability";
 import { KILL_GRACE_MS, run } from "./exec";
 import { derivedDockerfile, pinnedTag } from "./images";
 import { TaskProject } from "./project";
-import { taskPrompt } from "./prompts";
+import { implementerPrompt, reviewerPrompt, systemPrompt, taskPrompt } from "./prompts";
 import { AUTH_FAILURE, commitSubject, engineTooOld, MISSING_SESSION } from "./runner";
 import { Scheduler } from "./scheduler";
 import { cliCommand } from "./session";
@@ -238,6 +238,35 @@ describe("commitSubject", () => {
     expect(subject.length).toBeLessThanOrEqual(72);
     expect(subject).toMatch(/^T-001: Added \/workspace\/hello\.js, which does .*\S…$/);
     expect(long.startsWith(subject.slice(7, -1))).toBe(true);
+  });
+});
+
+describe("round prompts (D-072, D-082)", () => {
+  const task = { id: "T-1", title: "t", status: "ready", statusLine: 1, dependsOn: [], metadata: [], sections: [], questions: [{ checked: true, question: "Which?", answer: "This one", line: 5 }], statusEntries: [] } as unknown as Task;
+  const failure = { label: "Run unit tests", commands: ["make test"], code: 1, timedOut: false, output: "1 failed" };
+  const finding = { severity: "nit" as const, file: "a.ts", line: 3, summary: "rename x", reviewer: "agents/r" };
+
+  it("gives a resumed implementer only what the last round left open", () => {
+    const prompt = implementerPrompt({ task, text: "# T-1: t\n", diff: "", round: 2, failures: [failure], findings: [finding], resumed: true, answered: false });
+    expect(prompt).not.toContain("# T-1: t");
+    expect(prompt).toContain("Round 2: fix everything below, nits included");
+    expect(prompt).toContain("`Run unit tests` failed (exit 1)");
+    expect(prompt).toContain("nit · a.ts:3 · rename x (agents/r)");
+  });
+
+  it("gives a fresh implementer the task, and an answered question when resuming", () => {
+    expect(implementerPrompt({ task, text: "# T-1: t\n", diff: "", round: 1, failures: [], findings: [], resumed: false, answered: false })).toContain("# T-1: t");
+    expect(implementerPrompt({ task, text: "", diff: "", round: 1, failures: [], findings: [], resumed: true, answered: true })).toContain("The human answered:\n\n- Q: Which?\n  A: This one");
+  });
+
+  it("gives reviewers the whole change and last round's findings to check", () => {
+    const prompt = reviewerPrompt({ task, text: "# T-1: t\n", diff: "+x", round: 2, previous: [finding] });
+    expect(prompt).toContain("Review, round 2");
+    expect(prompt).toContain("```diff\n+x\n```");
+    expect(prompt).toContain("check these were fixed");
+    const agent = { name: "agents/r", tools: ["Read"], prompt: "You review." };
+    expect(systemPrompt(agent, "reviewer", undefined, undefined)).toContain("report_findings");
+    expect(systemPrompt(agent, "implementer", undefined, undefined)).toContain("finish tool");
   });
 });
 

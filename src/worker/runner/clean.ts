@@ -16,3 +16,16 @@ export function printable(text: string): string {
 export function printableLine(text: string): string {
   return printable(text).replace(/\s+/g, " ").trim();
 }
+
+// Agent text written into a task file: one line, at most `max` characters,
+// with what makes Markdown links, images (which a preview would load, D-060)
+// and HTML escaped, and no " · " separators, so it can't pass for a status
+// entry in Updates (D-079). Other Markdown is left alone, since humans read
+// these files raw. Bare URLs still become links in a preview, but load
+// nothing.
+export function inertLine(text: string, max = 2_000): string {
+  return printableLine(text)
+    .slice(0, max)
+    .replace(/·/g, "-")
+    .replace(/[\\[\]<>]/g, "\\$&");
+}

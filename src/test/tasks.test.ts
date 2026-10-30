@@ -76,3 +76,13 @@ suite("task files", () => {
     assert.deepEqual(titles, ["Mark ready", "Back to draft"]);
   });
 });
+
+suite("attention", () => {
+  test('"Open task" opens the task file at its questions (D-084)', async () => {
+    await api();
+    await vscode.commands.executeCommand("excaliharness.openTaskAt", file("tasks/T-002.md"), 2);
+    const editor = await waitFor(() => vscode.window.activeTextEditor, "an editor");
+    assert.equal(editor.document.uri.fsPath, file("tasks/T-002.md"));
+    assert.equal(editor.selection.active.line, 2);
+  });
+});

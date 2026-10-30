@@ -76,3 +76,17 @@ describe("replaceIndex", () => {
     expect(replaceIndex("# Tasks\n\n## Index\n", ["* x"])).toBe("# Tasks\n\n## Index\n* x\n");
   });
 });
+
+describe("editTask questions (D-011)", () => {
+  it("appends questions to ## Questions, with the status and Updates in one edit", () => {
+    const text = "# T-1: t\n\n* status: in-implementation\n\n## Questions\n* [x] Q: old\n  A: yes\n\n## Updates\n* a\n";
+    expect(editTask(text, 2, { status: "needs-decision", updates: ["* b"], questions: ["Which format?"] })).toBe(
+      "# T-1: t\n\n* status: needs-decision\n\n## Questions\n* [x] Q: old\n  A: yes\n\n* [ ] Q: Which format?\n  A:\n\n## Updates\n* a\n* b\n",
+    );
+  });
+
+  it("adds ## Questions before ## Updates when it's missing", () => {
+    const text = "# T-1: t\n\n* status: in-implementation\n\n## Updates\n* a\n";
+    expect(editTask(text, 2, { updates: [], questions: ["One?", "Two?"] })).toBe("# T-1: t\n\n* status: in-implementation\n\n## Questions\n* [ ] Q: One?\n  A:\n\n* [ ] Q: Two?\n  A:\n\n## Updates\n* a\n");
+  });
+});

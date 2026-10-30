@@ -924,6 +924,11 @@ question (see D-011) rather than made unilaterally.
     tasks.
 
 
+- Amended 2026-10-25 (unit B): the 60-minute and 100-turn limits apply to
+  each agent turn (the implementer's, or each reviewer's), not to a whole
+  round, which now also holds rebuilds, gates (D-081) and reviewers.
+  Rejected: one 60-minute limit per round.
+
 ## D-080 Rebuilds run offline first
 - Date: 2026-10-25
 - Decision: Between rounds (D-062, D-070) the dev and derived images are
@@ -934,6 +939,35 @@ question (see D-011) rather than made unilaterally.
 - Reason: Agent-written build steps never reach the network without the
   human seeing them; cached and offline steps need no prompt.
 - Rejected: Always building online; never building online.
+- Amended 2026-10-25 after E-010 (BuildKit doesn't reuse layers built with
+  the network on once it is off, so offline-first would ask every round):
+  the images are rebuilt only when a round changed a build input: the
+  Dockerfile, `.dockerignore`, a file the Dockerfile copies by name, or a
+  known dependency manifest or lockfile. Source changes need no rebuild,
+  since agents and gates work on the mounted worktree or commit. When a
+  build input changed, the task goes to `needs-human` listing those files,
+  and marking it `ready` runs one build with the network on (which also
+  runs any build steps after `COPY . .`). The first build, from the commit
+  the task started at, needs no approval. Amends D-070. Rejected: a
+  registry-only network for builds; always building online.
+- Amended 2026-10-25 after the unit B reviews: a build with the network on
+  runs without approval only for a commit already trusted (the one the task
+  started from, or one built before); any other commit only after the human
+  approved exactly that commit, and an attempt uses the approval up. Builds
+  read a copy of the commit, never the worktree. The detected build inputs
+  (manifests, Dockerfiles and Compose files by name, and what each build's
+  Dockerfile copies) only decide whether the image is stale. An
+  infrastructure task's Compose file is the agent's: every service in it
+  gets the dev service's refusals plus none of secrets, configs,
+  `volumes_from`, build `ssh`/`secrets`/`additional_contexts`/
+  `entitlements`/`network`/`privileged`, or a build context outside the
+  repository. Agent text written into task files (questions, findings,
+  summaries) has Markdown escaped, and " · " is kept for status entries,
+  which must start with their date and time.
+- Amended 2026-10-25: accepted risk, stated in the approval message: an
+  approved build runs on the human's Docker daemon, where its steps can read
+  the human's other local images and share their build cache. Rejected: a
+  dedicated buildx builder, which needs a pulled BuildKit image (D-052).
 
 ## D-081 Gates run on a copy of the round's commit
 - Date: 2026-10-25
@@ -978,3 +1012,31 @@ question (see D-011) rather than made unilaterally.
 - Reason: Speech isn't always welcome; trust keeps an agent's `.vscode`
   files inert.
 - Rejected: Always speaking.
+- Amended 2026-10-25: every status that needs the human notifies and
+  speaks: `review` ("Task T-007 is ready for review"), every way into
+  `needs-human` ("Task T-007 needs you"), and `needs-decision` ("Task T-007
+  has a question for you", with "Open task" opening the task file at
+  `## Questions` instead of "Open review"). Amends D-077.
+
+## D-085 Infrastructure tasks run only their dev service
+- Date: 2026-10-25
+- Decision: For an infrastructure task, the worker takes only the dev
+  service's build settings from the agent's Compose file (context,
+  Dockerfile, build args and target). The context and Dockerfile must be
+  inside the repository with no symlinks on the way; any other build
+  setting, `image:` or a reserved `excaliharness-*` name is refused. It
+  builds and runs that service from a Compose file it writes itself, beside
+  its own egress proxy. The agent's other services, volumes and networks
+  never run until the human merges the task into the main checkout. Narrows
+  D-062.
+- Reason: The agent's Compose file is untrusted, like a malicious repo's
+  (roadmap); running only what an allowlist builds closes the token,
+  host-mount and network routes the reviews found.
+- Rejected: Starting every service behind an allowlist of Compose settings;
+  starting every service with the specific holes patched.
+- Amended 2026-10-25 after review: before Compose reads the agent's file, a
+  file mentioning `include`, `extends`, `env_file` or `label_file`, or using
+  backslashes, YAML tags or explicit keys, is refused; Compose gets an empty
+  env file of ours instead of the agent's `.env`. The task's reviewers run
+  in the base agent image, not the one its Dockerfile built. Agent
+  containers get empty `NODE_OPTIONS`, `LD_PRELOAD` and `LD_LIBRARY_PATH`.

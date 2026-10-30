@@ -21,7 +21,8 @@ const HEADING = /^## +(.+?)(?:[ \t]+#+)?[ \t]*$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const QUESTION = /^[*-][ \t]+\[([ xX])\][ \t]+Q:[ \t]*(.*?)[ \t]*$/;
 const ANSWER = /^[ \t]+A:[ \t]?(.*?)[ \t]*$/;
-const STATUS_ENTRY = /^[*-][ \t]+.* · .* · status: (\S+) → (\S+)(?: · (.*))?$/;
+// Anchored to the date and who, so text inside a note can't pass for one.
+const STATUS_ENTRY = /^[*-][ \t]+\d{4}-\d\d-\d\d \d\d:\d\d · [^·]+ · status: (\S+) → (\S+)(?: · (.*))?$/;
 // A reason ending in "parked" marks the entry that parked the task (D-076).
 const PARKED = /(?:^|[\s;])parked$/;
 const WIKILINK = /^\[\[([^\]\n]+)\]\]$/;

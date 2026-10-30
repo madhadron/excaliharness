@@ -15,7 +15,7 @@ Text with [[T-9]] in it.
 
 \`\`\`markdown
 ## Updates
-* fake · entry · status: done → ready
+* 2026-01-01 00:00 · entry · status: done → ready
 \`\`\`
 
 ## Questions
@@ -90,7 +90,7 @@ describe("parseTask", () => {
   });
 
   it("warns about a duplicate section and uses the first", () => {
-    const result = parseTask("# T-1: x\n* status: draft\n## Updates\n* a · b · status: draft → ready\n## Updates\n", "T-1");
+    const result = parseTask("# T-1: x\n* status: draft\n## Updates\n* 2026-01-01 00:00 · b · status: draft → ready\n## Updates\n", "T-1");
     expect(result.ok && result.warnings[0]?.line).toBe(4);
     expect(result.ok && result.value.statusEntries).toHaveLength(1);
   });
@@ -134,7 +134,7 @@ describe("parseTask", () => {
         "```",
         "## Updates",
         "```",
-        "* a · b · status: draft → done",
+        "* 2026-01-01 00:00 · b · status: draft → done",
         "```",
         "",
       ].join("\n"),
@@ -229,11 +229,11 @@ describe("malformed sections", () => {
     ["a heading in a blockquote", "> ## Updates"],
     ["a setext heading", "Updates\n-------"],
   ])("doesn't read %s as a section", (_name, heading) => {
-    expect(ok(file(["* status: draft"], [heading, "* a · b · status: draft → ready"])).sections).toEqual([]);
+    expect(ok(file(["* status: draft"], [heading, "* 2026-01-01 00:00 · b · status: draft → ready"])).sections).toEqual([]);
   });
 
   it("warns that section names are case-sensitive", () => {
-    const text = file(["* status: draft"], ["## updates", "* a · b · status: draft → ready"]);
+    const text = file(["* status: draft"], ["## updates", "* 2026-01-01 00:00 · b · status: draft → ready"]);
     expect(ok(text).statusEntries).toEqual([]);
     expect(warningsOf(text)[0]).toMatchObject({ line: 3, message: expect.stringMatching(/case-sensitive/) as unknown });
   });
@@ -273,8 +273,8 @@ describe("malformed Updates entries", () => {
   const updates = (...body: string[]) => ok(file(["* status: draft"], ["## Updates", ...body])).statusEntries;
 
   it.each([
-    ["an ASCII arrow", "* a · b · status: draft -> ready"],
-    ["a missing target", "* a · b · status: draft →"],
+    ["an ASCII arrow", "* 2026-01-01 00:00 · b · status: draft -> ready"],
+    ["a missing target", "* 2026-01-01 00:00 · b · status: draft →"],
     ["missing separators", "* status: draft → ready"],
     ["no bullet", "a · b · status: draft → ready"],
   ])("doesn't record %s as a status change", (_name, line) => {
@@ -282,12 +282,12 @@ describe("malformed Updates entries", () => {
   });
 
   it("records unknown status names, which the rules then skip", () => {
-    expect(updates("* a · b · status: foo → bar")).toEqual([{ from: "foo", to: "bar", line: 4 }]);
+    expect(updates("* 2026-01-01 00:00 · b · status: foo → bar")).toEqual([{ from: "foo", to: "bar", line: 4 }]);
   });
 });
 
 describe("common Markdown in task bodies", () => {
-  const body = (...lines: string[]) => file(["* status: draft"], ["## Description", ...lines, "## Updates", "* a · b · status: draft → ready"]);
+  const body = (...lines: string[]) => file(["* status: draft"], ["## Description", ...lines, "## Updates", "* 2026-01-01 00:00 · b · status: draft → ready"]);
 
   it.each([
     ["a table", ["| field | value |", "| --- | --- |", "| status: | done |", "| ## Updates | x |"]],
@@ -297,8 +297,8 @@ describe("common Markdown in task bodies", () => {
     ["a blockquote", ["> * status: done", "> ## Updates"]],
     ["inline code", ["Run `## Updates` and `* status: done`."]],
     ["a single-line HTML comment", ["<!-- ## Updates -->"]],
-    ["a multi-line HTML comment", ["<!--", "## Updates", "* x · y · status: draft → done", "-->"]],
-    ["an indented code block", ["    ## Updates", "    * x · y · status: draft → done"]],
+    ["a multi-line HTML comment", ["<!--", "## Updates", "* 2026-01-01 00:00 · y · status: draft → done", "-->"]],
+    ["an indented code block", ["    ## Updates", "    * 2026-01-01 00:00 · y · status: draft → done"]],
     ["links and images", ["[## Updates](x.md) ![status: done](a.png)"]],
   ])("reads %s as body text without affecting the task", (_name, lines) => {
     const task = ok(body(...lines));

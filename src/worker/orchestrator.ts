@@ -22,8 +22,8 @@ import {
   type Change,
 } from "./tasks/transitions";
 import { gitDir, resolveHead } from "./git";
-import { TaskBlocked, TokenRejected, type RoundResult } from "./runner/runner";
-import { printableLine } from "./runner/clean";
+import { TaskBlocked, TokenRejected, type RunContext, type RunOutcome } from "./runner/runner";
+import { inertLine, printableLine } from "./runner/clean";
 import { Scheduler } from "./runner/scheduler";
 import { TaskWatcher, type WatchOptions } from "./watch";
 
@@ -51,7 +51,21 @@ export interface TaskRunnerLike {
   preflight(): Promise<void>;
   // Stops containers left over from an earlier worker, before any task runs.
   sweep?(): Promise<void>;
-  round(task: Task, text: string, abort: AbortController): Promise<RoundResult>;
+  run(task: Task, text: string, abort: AbortController, context: RunContext): Promise<RunOutcome>;
+  // The task's worktree, for "Open review".
+  worktreePath?(taskId: string): string;
+  // The task's clean result is recorded; its loop state can go.
+  finished?(taskId: string): void;
+}
+
+// Whether the task was marked ready from needs-human since it last started:
+// the human's go-ahead for D-080's rebuild and a new count (D-083).
+export function readyFromNeedsHuman(task: Task): boolean {
+  for (const entry of [...task.statusEntries].reverse()) {
+    if (entry.to === "in-implementation") return false;
+    if (entry.from === "needs-human" && entry.to === "ready") return true;
+  }
+  return false;
 }
 
 // How long to wait before trying again when a task couldn't start (Docker
@@ -189,17 +203,19 @@ export class Orchestrator {
 
   // Changes a task's status as the orchestrator, if it is still `from`.
   // Returns false if it isn't (someone changed it meanwhile).
-  transition(id: string, from: Status, to: Status, reason: string, notes: string[] = []): Promise<boolean> {
+  transition(id: string, from: Status, to: Status, reason: string, notes: string[] = [], questions: string[] = []): Promise<boolean> {
     return this.enqueue(() => {
       if (this.readOnly) return false;
-      const clean = (s: string) => printableLine(s).slice(0, 500);
+      // No " · " from anywhere but here: Updates lines can't pass for status
+      // entries (D-079).
+      const clean = (s: string) => printableLine(s).replace(/ · /g, " - ").slice(0, 1_000);
       const updates = [this.entry("orchestrator", `status: ${from} → ${to} · ${clean(reason)}`), ...notes.map((n) => this.entry("orchestrator", clean(n)))];
       let wrote = false;
       const result = this.store.update(this.taskPath(id), (text) => {
         const parsed = parseTask(text, id);
         if (!parsed.ok || parsed.value.status !== from) return undefined;
         wrote = true;
-        return editTask(text, parsed.value.statusLine, { status: to, updates });
+        return editTask(text, parsed.value.statusLine, { status: to, updates, questions: questions.map((q) => inertLine(q)) });
       });
       if (result.status === "failed") this.writeFailed(`tasks/${id}.md`, result.reason);
       this.pass();
@@ -207,7 +223,44 @@ export class Orchestrator {
     });
   }
 
-  // One task through the runner (unit A: one implementer round, then review).
+  // Appends an Updates line, e.g. a round's result (D-083), if the task is
+  // still `status`.
+  note(id: string, status: Status, line: string): Promise<void> {
+    return this.enqueue(() => {
+      if (this.readOnly) return;
+      const result = this.store.update(this.taskPath(id), (text) => {
+        const parsed = parseTask(text, id);
+        if (!parsed.ok || parsed.value.status !== status) return undefined;
+        // Never "status: …" first, which would read as a status entry.
+        const clean = printableLine(line).replace(/ · /g, " - ").replace(/^status:/, "status -").slice(0, 1_000);
+        return editTask(text, parsed.value.statusLine, { updates: [this.entry("orchestrator", clean)] });
+      });
+      if (result.status === "failed") this.writeFailed(`tasks/${id}.md`, result.reason);
+      this.pass();
+    });
+  }
+
+  // Tells the extension a task needs the human (D-077, D-084).
+  private attention(runner: TaskRunnerLike, id: string, status: "review" | "needs-human" | "needs-decision"): void {
+    const r = readFile(this.taskPath(id));
+    const parsed = r.status === "ok" ? parseTask(r.content.text, id) : undefined;
+    const task = parsed?.ok ? parsed.value : undefined;
+    const questions = task?.sections.find((s) => s.name === "Questions")?.heading;
+    this.options.notify({
+      method: "task/attention",
+      params: {
+        id,
+        title: task?.title ?? id,
+        status,
+        path: `tasks/${id}.md`,
+        ...(runner.worktreePath ? { worktree: runner.worktreePath(id) } : {}),
+        ...(questions !== undefined ? { questionsLine: questions } : {}),
+      },
+    });
+  }
+
+  // One task through the runner's loop (D-072), until it's clean, needs the
+  // human, or an agent asks a question.
   private async runTask(runner: TaskRunnerLike, id: string, abort: AbortController): Promise<void> {
     if (Date.now() < this.preflightBlockedUntil) return;
     try {
@@ -238,21 +291,44 @@ export class Orchestrator {
     this.retryAt.set(id, Date.now() + PREFLIGHT_BACKOFF_MS);
     let current = read();
     if (!current || this.isParked(current.task)) return;
+    const fromNeedsHuman = readyFromNeedsHuman(current.task);
+    const started = current.task.status === "ready";
     if (current.task.status === "ready") {
       if (!(await this.transition(id, "ready", "in-implementation", "started"))) return;
       current = read();
       if (!current) return;
     } else if (current.task.status !== "in-implementation") return;
     let moved: boolean;
+    let to: "review" | "needs-human" | "needs-decision" = "needs-human";
     try {
-      const result = await runner.round(current.task, current.text, abort);
-      const first = result.summary.split("\n")[0] ?? "";
-      moved = await this.transition(id, "in-implementation", "review", `implementer finished: ${first}`, result.notes);
+      const context: RunContext = { fromNeedsHuman, started, note: (line) => this.note(id, "in-implementation", line) };
+      const result = await runner.run(current.task, current.text, abort, context);
+      if (result.kind === "clean") {
+        to = "review";
+        const first = result.summary.split("\n")[0] ?? "";
+        moved = await this.transition(id, "in-implementation", "review", `gates passed and reviewers found nothing: ${inertLine(first)}`, result.notes);
+        if (moved) {
+          try {
+            runner.finished?.(id);
+          } catch (error) {
+            this.options.log(`${id}: couldn't clear its round state: ${String(error)}`);
+          }
+        }
+      } else if (result.kind === "question") {
+        to = "needs-decision";
+        moved = await this.transition(id, "in-implementation", "needs-decision", `${result.asker} asked a question`, result.notes, [result.question]);
+      } else {
+        moved = await this.transition(id, "in-implementation", "needs-human", result.reason, result.notes);
+      }
     } catch (error) {
       // Stopped (window closed): leave it in-implementation to resume later.
       // Aborted because the human changed its status: leave it as they set it.
       if (abort.signal.aborted) return;
-      const message = error instanceof Error ? error.message : String(error);
+      to = "needs-human";
+      // Errors can quote agent output (a failed command, the CLI's result).
+      // Long ones keep their start and their end, where the cause usually is.
+      const raw = error instanceof Error ? error.message : String(error);
+      const message = inertLine(raw.length > 900 ? `${raw.slice(0, 300)} … ${raw.slice(-600)}` : raw, 1_000);
       if (error instanceof TokenRejected) {
         // Not the task's fault: it resumes after the next sign-in.
         this.options.log(`${id}: ${message}`);
@@ -262,7 +338,10 @@ export class Orchestrator {
       const reason = error instanceof TaskBlocked ? `can't run: ${message}` : `failed: ${message}`;
       moved = await this.transition(id, "in-implementation", "needs-human", reason);
     }
-    if (moved) this.retryAt.delete(id);
+    if (moved) {
+      this.retryAt.delete(id);
+      this.attention(runner, id, to);
+    }
   }
 
   // Parked, as decide() sees it: a status accepted from a git checkout is

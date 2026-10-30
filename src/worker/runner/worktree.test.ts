@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { run } from "./exec";
-import { Worktrees } from "./worktree";
+import { copiedFiles, copiedPaths, isBuildInput, Worktrees } from "./worktree";
 
 let root: string;
 let state: string;
@@ -108,6 +108,79 @@ describe("Worktrees", () => {
     await w.diff("T-1");
     expect(fs.readFileSync(path.join(dir, ".git"), "utf8").trim()).toBe(before.trim().replace(/^gitdir: /, "gitdir: "));
     expect(git(["rev-parse", "--abbrev-ref", "HEAD"], dir)).toBe("task/T-1");
+  });
+
+  it("exports a commit for the gates, export-ignore or not, without touching the worktree (D-081)", async () => {
+    const w = worktrees();
+    const dir = await w.ensure("T-1");
+    fs.writeFileSync(path.join(dir, ".gitattributes"), "a.txt export-ignore\n");
+    fs.writeFileSync(path.join(dir, "b.txt"), "b\n");
+    await w.commit("T-1", "implementer", "T-1: b");
+    fs.writeFileSync(path.join(dir, "uncommitted.txt"), "x\n");
+    const out = path.join(state, "gates", "T-1");
+    await w.exportCommit(await w.head("T-1"), out);
+    expect(fs.readFileSync(path.join(out, "a.txt"), "utf8")).toBe("one\n");
+    expect(fs.readFileSync(path.join(out, "b.txt"), "utf8")).toBe("b\n");
+    expect(fs.existsSync(path.join(out, "uncommitted.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "uncommitted.txt"))).toBe(true);
+    expect(git(["status", "--short"])).toBe("");
+  });
+
+  it("lists the build inputs a round changed, not source changes (D-080)", async () => {
+    const w = worktrees();
+    const dir = await w.ensure("T-1");
+    fs.writeFileSync(path.join(dir, "Dockerfile"), "FROM x\nCOPY scripts/setup.sh /s.sh\nCOPY . .\n");
+    await w.commit("T-1", "implementer", "T-1: dockerfile");
+    const start = await w.startCommit("T-1");
+    const afterDockerfile = await w.head("T-1");
+    expect(await w.changedBuildInputs(start, afterDockerfile)).toEqual(["Dockerfile"]);
+    fs.writeFileSync(path.join(dir, "a.txt"), "source change\n");
+    fs.mkdirSync(path.join(dir, "scripts"));
+    fs.writeFileSync(path.join(dir, "scripts", "setup.sh"), "echo\n");
+    fs.mkdirSync(path.join(dir, "web"));
+    fs.writeFileSync(path.join(dir, "web", "package.json"), "{}\n");
+    await w.commit("T-1", "implementer", "T-1: more");
+    expect((await w.changedBuildInputs(afterDockerfile, await w.head("T-1"))).sort()).toEqual(["scripts/setup.sh", "web/package.json"]);
+    expect(await w.changedBuildInputs(afterDockerfile, afterDockerfile)).toEqual([]);
+  });
+
+  it("reads the files a Dockerfile copies by name", () => {
+    const files = copiedFiles('FROM x\nCOPY package.json package-lock.json ./\nCOPY --chown=1000 ./scripts/a.sh /a\nCOPY --from=build /out /out\nADD https://x/y.tgz /y\nCOPY src/ /src/\nCOPY *.cfg /c/\nCOPY \\\n  tools/b.sh /b\nCOPY . .\n');
+    expect([...files].sort()).toEqual(["package-lock.json", "package.json", "scripts/a.sh", "tools/b.sh"]);
+    expect(isBuildInput("deep/requirements-dev.txt", [])).toBe(true);
+    expect(isBuildInput("src/index.ts", [])).toBe(false);
+    expect(isBuildInput("docker/dev.Dockerfile", [])).toBe(true);
+    expect(isBuildInput("Dockerfile.dev", [])).toBe(true);
+    expect(isBuildInput("compose.override.yaml", [])).toBe(true);
+  });
+
+  it("reads directories, globs and the JSON form of COPY", () => {
+    const paths = copiedPaths('COPY ["setup.sh", "lib/", "/x/"]\nCOPY scripts /opt/scripts\nCOPY conf/*.ini /c/\nCOPY <<EOF /f\n');
+    expect(paths).toEqual([
+      { path: "setup.sh", tree: false },
+      { path: "lib", tree: true },
+      { path: "scripts", tree: true },
+      { path: "conf/*.ini", tree: true },
+    ]);
+    expect(isBuildInput("scripts/install.sh", paths)).toBe(true);
+    expect(isBuildInput("conf/a.ini", paths)).toBe(true);
+    expect(isBuildInput("conf/a.txt", paths)).toBe(false);
+    expect(isBuildInput("scriptsx/a", paths)).toBe(false);
+  });
+
+  it("finds a service's Dockerfile and what it copies, relative to its context", async () => {
+    const w = worktrees();
+    const dir = await w.ensure("T-1");
+    fs.mkdirSync(path.join(dir, "api", "docker"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "api", "docker", "app.df"), "FROM x\nCOPY tools/setup.sh /s\n");
+    await w.commit("T-1", "implementer", "T-1: api");
+    const before = await w.head("T-1");
+    fs.mkdirSync(path.join(dir, "api", "tools"));
+    fs.writeFileSync(path.join(dir, "api", "tools", "setup.sh"), "echo\n");
+    fs.writeFileSync(path.join(dir, "api", "docker", "app.df"), "FROM y\nCOPY tools/setup.sh /s\n");
+    await w.commit("T-1", "implementer", "T-1: change");
+    const builds = [{ context: "api", dockerfile: "docker/app.df" }];
+    expect((await w.changedBuildInputs(before, await w.head("T-1"), builds)).sort()).toEqual(["api/docker/app.df", "api/tools/setup.sh"]);
   });
 
   it("never runs hooks an agent could plant (D-069)", async () => {

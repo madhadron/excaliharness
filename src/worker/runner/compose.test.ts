@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  buildOverride,
   findDevService,
   findProjectFiles,
   generateOverride,
@@ -160,6 +161,30 @@ describe("generateOverride", () => {
     const odd = path.join(root, "a$b");
     const { yaml } = generateOverride({ ...base(), devImage: "sha256:x", worktree: odd });
     expect(yaml).toContain(`a$$b:/workspace`);
+  });
+});
+
+describe("variants (D-072, D-081, D-082)", () => {
+  it("mounts the workspace read-only for reviewers, and gives reviewers and gates no session", () => {
+    const base = { config: config(), devService: "dev", devImage: "sha256:d", proxyImage: "sha256:p", root, project: "p", emptyFile: "/e" };
+    const review = generateOverride({ ...base, worktree: "/w", readOnly: true, session: false }).yaml;
+    expect(review).toContain('- "/w:/workspace:ro"');
+    expect(review).not.toContain("excaliharness-session:/home/agent/.claude");
+    const gates = generateOverride({ ...base, worktree: "/g", session: false }).yaml;
+    expect(gates).toContain('- "/g:/workspace"');
+    expect(gates).not.toContain(":/home/agent/.claude");
+    expect(generateOverride({ ...base, worktree: "/w" }).yaml).toContain('- "excaliharness-session:/home/agent/.claude"');
+  });
+
+  it("builds from the worktree: contexts inside the repository move there (D-062)", () => {
+    const c = config();
+    c.services.api = { build: { context: path.join(root, "api") } };
+    c.services.outside = { build: { context: "/elsewhere" } };
+    const yaml = buildOverride(c, root, "/state/worktrees/T-1");
+    expect(yaml).toContain('"context": "/state/worktrees/T-1"');
+    expect(yaml).toContain('"context": "/state/worktrees/T-1/api"');
+    expect(yaml).not.toContain("elsewhere");
+    expect(yaml).not.toContain("network");
   });
 });
 

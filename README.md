@@ -20,9 +20,9 @@ A VS Code extension for agentic coding with Claude:
 Excaliharness is a standalone VS Code extension. It consists of a subprocess (the orchestrator) that runs
 agents, and the extension itself that adds functionality to VSCode.
 
-It is early work. Task files, statuses, sign-in and running one implementer
-round per task work today. The review loop with gates and reviewer agents is
-next. The design step for UI work and the in-editor review UI come after
+It is early work. Task files, statuses, sign-in and the review loop (the
+implementer, the required gates and reviewer agents, for up to three rounds)
+work today. The design step for UI work and the in-editor review UI come after
 that ([docs/roadmap.md](docs/roadmap.md)).
 
 The design follows a few principles:
@@ -100,14 +100,16 @@ Here is an example of working on a project with Excaliharness.
    Progress and the agent's summary appear in the task's `## Updates`. Up to
    two tasks run at once, which the `excaliharness.maxParallelTasks` setting
    controls.
-7. **Checks and reviews** (next). After the implementer, the required gates
+7. **Checks and reviews.** After the implementer, the required gates
    run on the commit, then the reviewer agents look at the diff. Failures and
    findings go back to the implementer for another round, until nothing is
-   left or three rounds have passed.
+   left or three rounds have passed. If the implementer changes the
+   Dockerfile or a dependency file, the task stops for you to approve
+   rebuilding the image with network access.
 8. **Answer questions.** If an agent needs a decision you haven't made, it
    adds a question under `## Questions` and the task becomes
-   `needs-decision`. Write your answer and check the box, and the task picks
-   up where it stopped.
+   `needs-decision`, and you get a notification. Write your answer and check
+   the box, and the task picks up where it stopped.
 9. **Review.** When a task is ready, VS Code shows a notification, spoken
    too, with "Open review", which opens its worktree. You can edit there
    directly. Line comments, chat and an Approve button that merges the branch

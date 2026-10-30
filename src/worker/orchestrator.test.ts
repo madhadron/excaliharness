@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Orchestrator } from "./orchestrator";
-import { TaskBlocked, TokenRejected } from "./runner/runner";
+import { TaskBlocked, TokenRejected, type RunContext, type RunOutcome } from "./runner/runner";
 import { hashOf, TEMP_PREFIX } from "./store";
 import type { DiagnosticsSnapshot, Notification, TasksSnapshot } from "./protocol";
 
@@ -253,10 +253,16 @@ describe("parked tasks (D-076)", () => {
 });
 
 describe("running tasks", () => {
-  type Round = (task: { id: string }, abort: AbortController) => Promise<{ summary: string; notes: string[] }>;
+  type Round = (task: { id: string }, abort: AbortController, context: RunContext) => Promise<RunOutcome>;
+  const clean = (summary: string, notes: string[] = []): Promise<RunOutcome> => Promise.resolve({ kind: "clean", summary, notes });
   async function startWith(round: Round, preflight: () => Promise<void> = () => Promise.resolve(), sweep?: () => Promise<void>) {
     const notes: Notification[] = [];
-    const runner = { preflight, round: (task: Parameters<Round>[0], _text: string, abort: AbortController) => round(task, abort), ...(sweep ? { sweep } : {}) };
+    const runner = {
+      preflight,
+      run: (task: Parameters<Round>[0], _text: string, abort: AbortController, context: RunContext) => round(task, abort, context),
+      worktreePath: (id: string) => `/state/worktrees/${id}`,
+      ...(sweep ? { sweep } : {}),
+    };
     const orchestrator = new Orchestrator(root, { notify: (n) => notes.push(n), log: () => {}, now: fixedNow, watch: false, runner });
     running.push(orchestrator);
     await orchestrator.start();
@@ -272,12 +278,61 @@ describe("running tasks", () => {
 
   it("takes a ready task through in-implementation to review, with the summary and notes", async () => {
     writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
-    const { orchestrator } = await startWith(() => Promise.resolve({ summary: "Added hello.js\nmore", notes: ["The implementer made no tests."] }));
+    const { orchestrator, notes } = await startWith(async (_t, _a, context) => {
+      await context.note("round 1: gates passed; no findings");
+      return clean("Added hello.js\nmore", ["The implementer made no tests."]);
+    });
     await settle(orchestrator, () => read("tasks/T-1.md").includes("status: review"));
     const text = read("tasks/T-1.md");
     expect(text).toContain("status: ready → in-implementation · started");
-    expect(text).toContain("status: in-implementation → review · implementer finished: Added hello.js");
+    expect(text).toContain("· orchestrator · round 1: gates passed; no findings");
+    expect(text).toContain("status: in-implementation → review · gates passed and reviewers found nothing: Added hello.js");
     expect(text).toContain("· orchestrator · The implementer made no tests.");
+    expect(notes).toContainEqual({ method: "task/attention", params: { id: "T-1", title: "Task T-1", status: "review", path: "tasks/T-1.md", worktree: "/state/worktrees/T-1" } });
+  });
+
+  it("sends a task still open after the last round to needs-human, listing what's open", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    const { orchestrator, notes } = await startWith(() => Promise.resolve({ kind: "needs-human", reason: "still open after 3 rounds", notes: ["blocking - crashes on empty input (agents/r)"] }));
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("needs-human"));
+    const text = read("tasks/T-1.md");
+    expect(text).toContain("status: in-implementation → needs-human · still open after 3 rounds");
+    expect(text).toContain("· orchestrator · blocking - crashes on empty input (agents/r)");
+    expect(notes.some((n) => n.method === "task/attention" && n.params.status === "needs-human")).toBe(true);
+  });
+
+  it("writes an agent's question, waits for the answer, then resumes the task", async () => {
+    writeTask("T-1", "ready", ["", "## Questions"], [recorded("draft", "ready")]);
+    const runs: RunContext[] = [];
+    const { orchestrator, notes } = await startWith((_t, _a, context) => {
+      runs.push(context);
+      return runs.length === 1 ? Promise.resolve({ kind: "question", question: "Which date format?", asker: "agents/implementer", notes: [] }) : clean("done");
+    });
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("needs-decision"));
+    let text = read("tasks/T-1.md");
+    expect(text).toContain("status: in-implementation → needs-decision · agents/implementer asked a question");
+    expect(text).toContain("* [ ] Q: Which date format?\n  A:");
+    const attention = notes.find((n) => n.method === "task/attention");
+    expect(attention?.params).toMatchObject({ status: "needs-decision", questionsLine: 4 });
+    // The human answers and checks the box: the task carries on.
+    fs.writeFileSync(path.join(root, "tasks", "T-1.md"), text.replace("* [ ] Q: Which date format?\n  A:", "* [x] Q: Which date format?\n  A: ISO 8601"));
+    await orchestrator.runPass();
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("status: review"));
+    text = read("tasks/T-1.md");
+    expect(text).toContain("status: needs-decision → in-implementation · all questions are answered");
+    expect(runs).toHaveLength(2);
+    expect(runs.every((r) => !r.fromNeedsHuman)).toBe(true);
+  });
+
+  it("tells the runner when the human marked the task ready from needs-human", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready"), recorded("ready", "in-implementation"), recorded("in-implementation", "needs-human"), "* 2026-10-23 15:00 · human · status: needs-human → ready"]);
+    const runs: RunContext[] = [];
+    const { orchestrator } = await startWith((_t, _a, context) => {
+      runs.push(context);
+      return clean("x");
+    });
+    await settle(orchestrator, () => runs.length > 0);
+    expect(runs[0]?.fromNeedsHuman).toBe(true);
   });
 
   it("sends a blocked task to needs-human with the reason", async () => {
@@ -287,6 +342,14 @@ describe("running tasks", () => {
     expect(read("tasks/T-1.md")).toContain("status: in-implementation → needs-human · can't run: the repository is missing Dockerfile");
   });
 
+  it("notifies the human however a task reaches needs-human", async () => {
+    writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
+    const { orchestrator, notes } = await startWith(() => Promise.reject(new Error("docker compose up failed")));
+    await settle(orchestrator, () => read("tasks/T-1.md").includes("needs-human"));
+    await settle(orchestrator, () => notes.some((n) => n.method === "task/attention"));
+    expect(notes.find((n) => n.method === "task/attention")?.params).toMatchObject({ id: "T-1", status: "needs-human" });
+  });
+
   it("leaves the task alone when Docker or the token isn't available", async () => {
     writeTask("T-1", "ready", [], [recorded("draft", "ready")]);
     const before = read("tasks/T-1.md");
@@ -294,7 +357,7 @@ describe("running tasks", () => {
     const { orchestrator } = await startWith(
       () => {
         rounds++;
-        return Promise.resolve({ summary: "x", notes: [] });
+        return clean("x");
       },
       () => Promise.reject(new Error("Docker isn't running")),
     );
@@ -349,7 +412,7 @@ describe("running tasks", () => {
     const { orchestrator } = await startWith(
       () => {
         order.push("round");
-        return Promise.resolve({ summary: "x", notes: [] });
+        return clean("x");
       },
       undefined,
       () => {
@@ -391,7 +454,7 @@ describe("running tasks", () => {
     let rounds = 0;
     const { orchestrator } = await startWith(() => {
       rounds++;
-      return Promise.resolve({ summary: "x", notes: [] });
+      return clean("x");
     });
     await orchestrator.runPass();
     await new Promise((r) => setTimeout(r, 50));

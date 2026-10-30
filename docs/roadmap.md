@@ -82,6 +82,11 @@ tasks.
 - The nested-repository scan walks the whole worktree synchronously (twice
   a round); with large `node_modules` trees, make it asynchronous or skip
   directories git ignores. Vendored trees that contain `.git` block a task.
+- A task whose approved image build fails can't get an implementer turn
+  to fix it (the implementer runs in the new image); the human fixes the
+  branch or retries. Letting the implementer run in the last good image,
+  with the failure as a gate failure as infrastructure tasks do, would let
+  the agent fix it.
 - Waiting for a sign-in in the pre-start check can't be cancelled, so a
   shutdown during it waits its full 30 s.
 - The CLI warns that `~/.claude.json` is missing on every round, since

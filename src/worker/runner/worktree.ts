@@ -6,7 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { READ_ONLY_PATHS } from "./compose";
-import { printableLine } from "./clean";
+import { inertLine } from "./clean";
 import { TaskBlocked } from "./errors";
 import { tail, type Run } from "./exec";
 
@@ -157,7 +157,7 @@ export class Worktrees {
   private async worktreeEnv(taskId: string): Promise<NodeJS.ProcessEnv> {
     const nested = nestedRepositories(this.path(taskId));
     if (nested.length) {
-      throw new TaskBlocked(`the agent created a git repository inside ${taskId}'s worktree (${nested.slice(0, 5).map(printableLine).join(", ")}); git won't run there until it is removed`);
+      throw new TaskBlocked(`the agent created a git repository inside ${taskId}'s worktree (${nested.slice(0, 5).map((n) => inertLine(n, 200)).join(", ")}); git won't run there until it is removed`);
     }
     const admin = await this.adminDir(taskId);
     if (!admin) throw new Error(`${taskId}'s worktree isn't registered in the repository`);
@@ -271,4 +271,272 @@ export class Worktrees {
     const diff = parts.filter(Boolean).join("\n\n");
     return diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n… (diff truncated)` : diff;
   }
+  // The commit the task's branch points at.
+  async head(taskId: string): Promise<string> {
+    return this.git(["rev-parse", "--verify", `refs/heads/${this.branch(taskId)}^{commit}`], this.root, "rev-parse");
+  }
+
+  // Where the task's branch left the main checkout's branch: the human's own
+  // code (D-080).
+  async startCommit(taskId: string): Promise<string> {
+    const main = await this.git(["rev-parse", "HEAD"], this.root, "rev-parse");
+    return this.git(["merge-base", main, `refs/heads/${this.branch(taskId)}`], this.root, "merge-base");
+  }
+
+  // The committed changes on the task's branch, for reviewers (D-082). Run in
+  // the main repository: it reads commits only, never the worktree.
+  async branchDiff(taskId: string): Promise<string> {
+    const base = await this.startCommit(taskId);
+    const diff = await this.git(["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", base, `refs/heads/${this.branch(taskId)}`], this.root, "diff");
+    return diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n… (diff truncated)` : diff;
+  }
+
+  // Whether a commit still exists (a reset branch may have lost it).
+  async exists(commit: string): Promise<boolean> {
+    return (await this.exec(["cat-file", "-e", `${commit}^{commit}`], this.root)).code === 0;
+  }
+
+  // The build inputs (D-080) that changed between two commits: manifests and
+  // Dockerfiles by name, Compose files, and what each build's Dockerfile
+  // copies (paths relative to the repository). This decides whether the image
+  // is stale; whether a build may use the network is decided by which commit
+  // is built, not by this list.
+  async changedBuildInputs(from: string, to: string, builds: BuildSpec[] = [{ context: ".", dockerfile: "Dockerfile" }]): Promise<string[]> {
+    if (from === to) return [];
+    const listed = await this.exec(["diff", "--name-only", "-z", "--no-renames", from, to], this.root);
+    if (listed.code !== 0) throw new Error(`git diff failed:\n${tail(listed)}`);
+    if (listed.truncated) return ["(more changed files than can be listed)"];
+    const changed = listed.stdout.split("\0").filter(Boolean);
+    if (!changed.length) return [];
+    const copied: CopiedPath[] = [];
+    const dockerfiles = new Set<string>();
+    for (const build of builds) {
+      const dockerfile = path.posix.normalize(path.posix.join(build.context, build.dockerfile));
+      dockerfiles.add(dockerfile);
+      const text = await this.exec(["show", `${to}:${dockerfile}`], this.root);
+      if (text.code !== 0) continue;
+      for (const c of copiedPaths(text.stdout)) copied.push({ ...c, path: path.posix.normalize(path.posix.join(build.context, c.path)) });
+    }
+    return changed.filter((file) => dockerfiles.has(file) || isBuildInput(file, copied));
+  }
+
+  // The tree of `commit`, checked out into `dir` (replacing it) for the gates
+  // (D-081). A separate index, so the main checkout's isn't touched; not
+  // `git archive`, whose in-tree export-ignore could leave files out.
+  async exportCommit(commit: string, dir: string): Promise<void> {
+    // An agent could commit a tree big enough to fill the disk.
+    // Counted line by line as it streams, so the size of the listing itself
+    // doesn't matter.
+    let files = 0;
+    let bytes = 0;
+    const listing = await this.run("git", [...SAFE_CONFIG, "ls-tree", "-r", "-l", commit], {
+      cwd: this.root,
+      env: this.env(),
+      timeoutMs: 5 * 60_000,
+      onLine: (line) => {
+        if (!line) return;
+        files++;
+        bytes += Number(/^\S+ \S+ \S+ +(\d+)\t/.exec(line)?.[1]) || 0;
+      },
+    });
+    if (listing.code !== 0) throw new Error(`git ls-tree failed:\n${tail(listing)}`);
+    if (files > MAX_EXPORT_FILES || bytes > MAX_EXPORT_BYTES) {
+      throw new TaskBlocked(`commit ${commit.slice(0, 12)} is too big to check out (${files} files, ${Math.round(bytes / 1e6)} MB)`);
+    }
+    removeQuietly(dir, this.log);
+    fs.mkdirSync(dir, { recursive: true });
+    const index = `${dir}.index`;
+    fs.rmSync(index, { force: true });
+    const env = { GIT_INDEX_FILE: index, GIT_WORK_TREE: dir };
+    try {
+      await this.git(["read-tree", commit], this.root, "read-tree", env);
+      await this.git(["checkout-index", "--all", "--force"], this.root, "checkout-index", env);
+    } finally {
+      fs.rmSync(index, { force: true });
+    }
+  }
+}
+
+const MAX_EXPORT_FILES = 500_000;
+const MAX_EXPORT_BYTES = 4e9;
+
+// Removes a folder the gates or a build used, making what a container left
+// read-only writable first; logs instead of failing.
+export function removeQuietly(dir: string, log?: (line: string) => void): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return;
+  } catch {
+    // Try again below.
+  }
+  try {
+    const chmod = (p: string) => {
+      const stat = fs.lstatSync(p, { throwIfNoEntry: false });
+      if (!stat || stat.isSymbolicLink()) return;
+      if (stat.isDirectory()) {
+        fs.chmodSync(p, 0o700);
+        for (const name of fs.readdirSync(p)) chmod(path.join(p, name));
+      }
+    };
+    chmod(dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    log?.(`couldn't remove ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// A service's build: its context and Dockerfile, relative to the repository.
+export interface BuildSpec {
+  context: string;
+  dockerfile: string;
+}
+
+export interface CopiedPath {
+  path: string;
+  // A directory or glob: everything under or matching it counts.
+  tree: boolean;
+}
+
+// Dependency manifests, lockfiles, Compose files and Dockerfiles, by name
+// (D-080).
+const MANIFESTS = new Set([
+  "Dockerfile",
+  ".dockerignore",
+  "compose.yaml",
+  "compose.yml",
+  "docker-compose.yaml",
+  "docker-compose.yml",
+  ".env",
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "bun.lockb",
+  "bun.lock",
+  ".npmrc",
+  ".yarnrc.yml",
+  "pyproject.toml",
+  "poetry.lock",
+  "uv.lock",
+  "Pipfile",
+  "Pipfile.lock",
+  "setup.py",
+  "setup.cfg",
+  "Cargo.toml",
+  "Cargo.lock",
+  "go.mod",
+  "go.sum",
+  "Gemfile",
+  "Gemfile.lock",
+  "composer.json",
+  "composer.lock",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "gradle.properties",
+  "packages.lock.json",
+  "Directory.Packages.props",
+  "mix.exs",
+  "mix.lock",
+]);
+const MANIFEST_PATTERNS = [
+  /^requirements.*\.txt$/,
+  /^constraints.*\.txt$/,
+  /\.gemspec$/,
+  /\.csproj$/,
+  /\.fsproj$/,
+  /(^|\.)Dockerfile(\.|$)/i,
+  /\.dockerfile$/i,
+  /^(docker-)?compose\..*\.ya?ml$/,
+  /^\.env\./,
+];
+
+// Whether a path matches a glob, or is under something that does. Every
+// `*` may cross directories and a character class matches any character,
+// so it matches at least what Docker would (over-matching only offers a
+// rebuild). Two-pointer matching with no backtracking beyond the last star:
+// at most pattern × path steps, whatever the agent's Dockerfile says.
+export function globMatches(glob: string, file: string): boolean {
+  const pattern = glob.replace(/\[[^\]/]*\]?/g, "?");
+  const matches = (text: string) => {
+    let p = 0;
+    let t = 0;
+    let star = -1;
+    let mark = 0;
+    while (t < text.length) {
+      if (p < pattern.length && (pattern[p] === "?" || pattern[p] === text[t])) {
+        p++;
+        t++;
+      } else if (p < pattern.length && pattern[p] === "*") {
+        star = p++;
+        mark = t;
+      } else if (star >= 0) {
+        p = star + 1;
+        t = ++mark;
+      } else return false;
+    }
+    while (p < pattern.length && pattern[p] === "*") p++;
+    return p === pattern.length;
+  };
+  if (matches(file)) return true;
+  // A matched directory takes everything under it.
+  for (let i = file.indexOf("/"); i > 0; i = file.indexOf("/", i + 1)) if (matches(file.slice(0, i))) return true;
+  return false;
+}
+
+export function isBuildInput(file: string, copied: readonly CopiedPath[]): boolean {
+  const base = path.posix.basename(file);
+  if (MANIFESTS.has(base) || MANIFEST_PATTERNS.some((p) => p.test(base))) return true;
+  return copied.some((c) => {
+    if (/[*?[]/.test(c.path)) return globMatches(c.path, file);
+    // A directory or a file: `config.d` may well be a directory.
+    return file === c.path || file.startsWith(`${c.path}/`);
+  });
+}
+
+// What a Dockerfile's COPY and ADD lines take from the build context: paths,
+// directories and globs, in shell or JSON form. `.` (everything) is left out:
+// that the whole context goes in is the reason a rebuild needs approval, not
+// a change to list. URLs, other stages and heredocs are skipped.
+export function copiedPaths(dockerfile: string): CopiedPath[] {
+  const found: CopiedPath[] = [];
+  const joined = dockerfile.replace(/\\\r?\n/g, " ");
+  for (const line of joined.split(/\r?\n/)) {
+    const m = /^\s*(?:COPY|ADD)\s+(.*)$/i.exec(line);
+    if (!m?.[1]) continue;
+    let rest = m[1].trim();
+    const flags: string[] = [];
+    while (rest.startsWith("--")) {
+      const flag = /^\S+/.exec(rest)?.[0] ?? "";
+      flags.push(flag);
+      rest = rest.slice(flag.length).trim();
+    }
+    if (flags.some((f) => /^--from=/i.test(f))) continue;
+    let args: string[];
+    if (rest.startsWith("[")) {
+      try {
+        const parsed: unknown = JSON.parse(rest);
+        args = Array.isArray(parsed) ? parsed.filter((a): a is string => typeof a === "string") : [];
+      } catch {
+        continue;
+      }
+    } else args = rest.split(/\s+/);
+    for (const source of args.slice(0, -1)) {
+      if (source.startsWith("<<") || /^[a-z]+:\/\//i.test(source)) continue;
+      const clean = source.replace(/^\.\//, "").replace(/\/+$/, "");
+      if (!clean || clean === ".") continue;
+      // Without a file extension it may well be a directory.
+      found.push({ path: path.posix.normalize(clean), tree: source.endsWith("/") || !/\.[^/]+$/.test(clean) || /[*?[]/.test(clean) });
+    }
+  }
+  return found;
+}
+
+// The files a Dockerfile copies by name (for tests and messages).
+export function copiedFiles(dockerfile: string): Set<string> {
+  return new Set(copiedPaths(dockerfile).filter((c) => !c.tree).map((c) => c.path));
 }

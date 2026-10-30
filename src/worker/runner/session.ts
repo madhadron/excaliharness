@@ -7,15 +7,21 @@ import * as path from "node:path";
 import { createSdkMcpServer, query, tool, type SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { AgentDef } from "../agents/agentDefs";
-import { printable } from "./clean";
+import { printable, printableLine } from "./clean";
+import { cleanFinding, type Finding } from "./findings";
 import type { TaskProject } from "./project";
 
 export const TOOL_SERVER = "excaliharness";
-// A round's turn limit (D-079): one turn is one model response and its tool
+// An agent turn's limit (D-079): one turn is one model response and its tool
 // calls.
 export const MAX_TURNS = 100;
 const STDERR_TAIL = 16 * 1024;
 export const FINISH_TOOL = `mcp__${TOOL_SERVER}__finish`;
+export const ASK_TOOL = `mcp__${TOOL_SERVER}__ask_question`;
+export const FINDINGS_TOOL = `mcp__${TOOL_SERVER}__report_findings`;
+
+// The implementer edits and finishes; a reviewer only reports (D-068).
+export type Role = "implementer" | "reviewer";
 
 // The SDK checks that its CLI exists before spawning, but the worker never
 // runs a CLI on the host (E-006); this stub satisfies the check and explains
@@ -33,6 +39,7 @@ export interface AgentRun {
   project: TaskProject;
   service: string;
   agent: AgentDef;
+  role: Role;
   systemPrompt: string;
   prompt: string;
   // The session to continue (D-071).
@@ -55,6 +62,10 @@ export interface AgentOutcome {
   // The end of the CLI's stderr, cleaned: where it explains a failure the SDK
   // doesn't pass on (e.g. a session it can't resume).
   stderr?: string;
+  // A question for the human (D-011): the round pauses until it's answered.
+  question?: string;
+  // A reviewer's findings; undefined if it never called report_findings.
+  findings?: Finding[];
 }
 
 // The `docker compose run` command that stands in for the CLI. The SDK passes
@@ -79,7 +90,40 @@ export async function runAgent(run: AgentRun): Promise<AgentOutcome> {
       return { content: [{ type: "text", text: "Recorded. End your turn now." }] };
     },
   );
-  const allowedTools = [...run.agent.tools, FINISH_TOOL];
+  const ask = tool(
+    "ask_question",
+    "Ask the human a question when the work needs a decision that the task, its answered questions and the project decisions don't cover. Ask one clear question, then stop: you will continue with the answer.",
+    { question: z.string().min(1).max(2_000) },
+    // eslint-disable-next-line @typescript-eslint/require-await -- the SDK expects a promise
+    async ({ question }) => {
+      outcome.question ??= printableLine(question).slice(0, 2_000);
+      return { content: [{ type: "text", text: "Recorded. Stop now; you will continue once the human answers." }] };
+    },
+  );
+  const report = tool(
+    "report_findings",
+    "Report every problem you found in this round's changes, blocking or nit, with the file and line where you can. Call it once, at the end; an empty list means you found nothing.",
+    {
+      findings: z
+        .array(
+          z.object({
+            severity: z.enum(["blocking", "nit"]),
+            file: z.string().max(500).optional(),
+            line: z.number().int().positive().optional(),
+            summary: z.string().min(1).max(300),
+            detail: z.string().max(2_000).optional(),
+          }),
+        )
+        .max(100),
+    },
+    // eslint-disable-next-line @typescript-eslint/require-await -- the SDK expects a promise
+    async ({ findings }) => {
+      outcome.findings = [...(outcome.findings ?? []), ...findings.map((f) => cleanFinding(f, run.agent.name))];
+      return { content: [{ type: "text", text: "Recorded. End your turn now." }] };
+    },
+  );
+  const own = run.role === "implementer" ? [finish, ask] : [report, ask];
+  const allowedTools = [...run.agent.tools, ...(run.role === "implementer" ? [FINISH_TOOL] : [FINDINGS_TOOL]), ASK_TOOL];
   // The tools the model sees at all: the agent's own, without any
   // permission patterns like Bash(npm *).
   const tools = [...new Set(run.agent.tools.map((t) => t.replace(/\(.*$/, "")).filter((t) => !t.startsWith("mcp__")))];
@@ -91,7 +135,7 @@ export async function runAgent(run: AgentRun): Promise<AgentOutcome> {
     allowedTools,
     // Anything not allowed is refused without asking anyone.
     permissionMode: "dontAsk",
-    mcpServers: { [TOOL_SERVER]: createSdkMcpServer({ name: TOOL_SERVER, tools: [finish] }) },
+    mcpServers: { [TOOL_SERVER]: createSdkMcpServer({ name: TOOL_SERVER, tools: own }) },
     abortController: run.abort,
     // Only what this code passes: no user or project settings files.
     settingSources: [],

@@ -43,7 +43,9 @@ it are in [decisions.md](decisions.md) (D-005, D-009, D-011, D-030 to D-047).
 - **Questions**: `* [ ] Q: question`, then an indented `A:` line for the
   answer; further indented lines continue it. Checking the box (`[x]`) marks it
   answered.
-- **Updates**: one line per event, `* <date> <time> · <who> · <text>`. The
+- **Updates**: one line per event, `* <date> <time> · <who> · <text>`, with
+  the date and time as `YYYY-MM-DD HH:MM` (other lines aren't read as status
+  changes). The
   orchestrator only appends. Status changes are written as
   `status: <from> → <to>`, optionally followed by ` · <reason>`. The last such
   line is the task's recorded status: a `status:` line that differs from it was
@@ -67,10 +69,30 @@ it are in [decisions.md](decisions.md) (D-005, D-009, D-011, D-030 to D-047).
   offers "Mark ready" and "Back to draft" (and "Mark done" if it was parked in
   `review`).
 - A `ready` task is started by the orchestrator (`in-implementation`), at most
-  two at a time by default (setting `excaliharness.maxParallelTasks`). When
-  the implementer finishes it goes to `review`; if it can't run, or runs over
-  60 minutes or 100 turns, to `needs-human` with the reason in Updates.
-  Changing a running task's status by hand stops it and keeps your status.
+  two at a time by default (setting `excaliharness.maxParallelTasks`). Each
+  round, the implementer works and its changes are committed, then the README's
+  required gates run on a copy of that commit (20 minutes in all), then the
+  pipeline's reviewers look at the whole change. Each round adds an Updates
+  line, e.g. "round 2: `make test` failed; 3 findings (1 blocking)". When the
+  gates pass and reviewers find nothing, nits included, the task goes to
+  `review`. After three rounds with something still open it goes to
+  `needs-human`, with one Updates line per open item linking to the file in
+  the task's worktree; marking it `ready` starts three more rounds. A task
+  that can't run, or whose agent runs over 60 minutes or 100 turns, also goes
+  to `needs-human` with the reason in Updates.
+- If a round changes a Dockerfile, a Compose file, something a Dockerfile
+  copies or a dependency manifest (anywhere in the repository, by name), the
+  image needs rebuilding with network access. The task goes to `needs-human`
+  listing those files and the commit; marking it `ready` allows building that
+  one commit. The build runs on your Docker with network access, where it can
+  read your other local images and build cache.
+- An agent that needs a decision asks a question: it is added under
+  `## Questions` and the task goes to `needs-decision`. Answer it and check
+  the box, and the task carries on where it stopped (the round count isn't
+  reset).
+- On `review`, `needs-human` or `needs-decision`, VS Code shows a notification
+  and, on macOS, speaks it (setting `excaliharness.speakNotifications`).
+- Changing a running task's status by hand stops it and keeps your status.
   If Claude rejects the sign-in, the task stays `in-implementation` and
   resumes after you sign in again.
 - An agent works in its task's worktree, kept in the extension's storage

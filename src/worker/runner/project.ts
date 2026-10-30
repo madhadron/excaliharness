@@ -11,11 +11,14 @@ export class TaskProject {
     readonly name: string,
     // The Compose files, in order (target's file, then the override).
     private readonly files: string[],
+    // Instead of the project folder's .env, e.g. an empty file when that
+    // folder is an agent's (D-085).
+    private readonly envFile?: string,
   ) {}
 
   // Arguments for a `docker compose …` command against this project.
   composeArgs(): string[] {
-    return ["compose", "--project-directory", this.projectDir, "-p", this.name, ...this.files.flatMap((f) => ["-f", f])];
+    return ["compose", "--project-directory", this.projectDir, ...(this.envFile ? ["--env-file", this.envFile] : []), "-p", this.name, ...this.files.flatMap((f) => ["-f", f])];
   }
 
   env(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {

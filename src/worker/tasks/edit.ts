@@ -10,7 +10,12 @@ export interface TaskEdit {
   status?: string;
   // Lines to append to ## Updates, in order.
   updates: string[];
+  // Questions to add to ## Questions in the D-011 form, unanswered.
+  questions?: string[];
 }
+
+// One unanswered question, as D-011 writes it.
+export const questionLines = (question: string) => [`* [ ] Q: ${question}`, "  A:"];
 
 // Applies every edit for one task file at once, so a status change and the
 // Updates line recording it land in a single write.
@@ -21,6 +26,24 @@ export function editTask(text: string, statusLine: number, edit: TaskEdit): stri
     const prefix = line === undefined ? undefined : STATUS_PREFIX.exec(line);
     if (!prefix?.[1]) throw new Error(`line ${statusLine} is not a status line`);
     replaceLines(file, statusLine, statusLine + 1, [`${prefix[1]} ${edit.status}`]);
+  }
+  if (edit.questions?.length) {
+    const lines = edit.questions.flatMap((q, i) => [...(i ? [""] : []), ...questionLines(q)]);
+    const sections = parseSections(file.lines);
+    const questions = sections.find((s) => s.name === "Questions");
+    if (questions) {
+      let at = questions.end;
+      while (at > questions.heading + 1 && file.lines[at - 1]?.trim() === "") at--;
+      const lead = at > questions.heading + 1 ? [""] : [];
+      insertLines(file, at, [...lead, ...lines]);
+    } else {
+      // Before ## Updates, where the task format puts it, or at the end.
+      const updates = sections.find((s) => s.name === "Updates");
+      const at = updates ? updates.heading : file.lines.length;
+      const before = file.lines[at - 1];
+      const lead = at === 0 || before === undefined || before.trim() === "" ? [] : [""];
+      insertLines(file, at, [...lead, "## Questions", ...lines, ...(updates ? [""] : [])]);
+    }
   }
   if (edit.updates.length > 0) {
     const updates = parseSections(file.lines).find((s) => s.name === "Updates");

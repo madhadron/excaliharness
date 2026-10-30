@@ -74,6 +74,20 @@ export interface NotificationParams {
   progress: { message: string };
   // A task needs to start and there's no token: sign in (D-049).
   "auth/required": Record<string, never>;
+  // A task needs the human (D-077, D-084): show a notification and speak it.
+  "task/attention": TaskAttention;
+}
+
+export interface TaskAttention {
+  id: string;
+  title: string;
+  status: "review" | "needs-human" | "needs-decision";
+  // The task's file, relative to the repository root.
+  path: string;
+  // The task's worktree, for "Open review".
+  worktree?: string;
+  // The 0-based line of ## Questions, for "Open task".
+  questionsLine?: number;
 }
 
 export type NotificationMethod = keyof NotificationParams;
@@ -152,6 +166,19 @@ export function isNotification(message: unknown): message is Notification {
   }
   if (message.method === "progress") return isObject(message.params) && typeof message.params.message === "string";
   if (message.method === "auth/required") return isObject(message.params);
+  if (message.method === "task/attention") {
+    const p = message.params;
+    return (
+      isObject(p) &&
+      typeof p.id === "string" &&
+      /^T-\d+$/.test(p.id) &&
+      typeof p.title === "string" &&
+      (p.status === "review" || p.status === "needs-human" || p.status === "needs-decision") &&
+      typeof p.path === "string" &&
+      (p.worktree === undefined || typeof p.worktree === "string") &&
+      (p.questionsLine === undefined || Number.isSafeInteger(p.questionsLine))
+    );
+  }
   return false;
 }
 

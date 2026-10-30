@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { OPEN_TASK_COMMAND, openTaskAt, showAttention } from "./attention";
 import { ACCOUNT_COMMAND, AuthManager, SIGN_IN_COMMAND, SIGN_OUT_COMMAND } from "./auth";
 import { registerCommands, RESTART_COMMAND } from "./commands";
 import { TaskDiagnostics } from "./diagnostics";
@@ -57,6 +58,7 @@ export function activate(context: vscode.ExtensionContext): ExcaliharnessApi | u
     onNotification: (n) => {
       if (n.method === "tasks/changed") state.update(n.params);
       else if (n.method === "tasks/diagnostics") diagnostics.update(n.params);
+      else if (n.method === "task/attention") showAttention(root, n.params, output);
       else forAuth.manager?.handleNotification(n);
     },
     onExit: () => {
@@ -100,6 +102,7 @@ export function activate(context: vscode.ExtensionContext): ExcaliharnessApi | u
     vscode.commands.registerCommand(SIGN_IN_COMMAND, () => signIn.signIn()),
     vscode.commands.registerCommand(SIGN_OUT_COMMAND, () => signIn.signOut()),
     vscode.commands.registerCommand(ACCOUNT_COMMAND, () => signIn.account()),
+    vscode.commands.registerCommand(OPEN_TASK_COMMAND, (file: string, line?: number) => openTaskAt(root, file, line)),
   );
 
   return {

@@ -173,3 +173,32 @@ D passed. Each successful run minted a long-lived token (two in total: A and D).
   The proxy refused nothing, so the D-079 rules let the pinned CLI through;
   the token appeared nowhere in the log. The session ID was saved and its
   volume kept for the next round. No containers were left.
+
+## E-010 Do builds with the network off reuse layers built with it on?
+- Date: 2026-10-25
+- Question: D-080 rebuilds offline first, assuming cached `RUN` layers from
+  an online build are reused. Are they?
+- Setup: `experiments/rebuild-cache/run.sh` (Docker Engine 29.8.2, Compose
+  5.5.0): a Dockerfile that runs `npm install`, built once online, then with
+  a Compose override setting `build.network: none`.
+- Result: **no.** With nothing changed at all, the offline build still re-ran
+  `RUN npm install` (the `COPY` layers before it were cached) and failed
+  without the network: BuildKit's cache key includes the network mode. So
+  an offline-first rebuild fails at the first `RUN` that needs the network,
+  every time, and D-080 would ask the human on every round.
+
+## E-011 The gate loop with a real token
+- Date: 2026-10-25
+- Question: does unit B's loop (D-072, D-080 to D-085) take a task through
+  implementer, required gate and reviewer to `review` with a real token?
+- Setup: `experiments/runner-smoke/real-token.sh`, run by the human: the
+  stand-in repo's T-001 ("add hello.js"), a required gate
+  `node hello.js | grep -qx hello`, and one reviewer agent.
+- Result: **works.** The image was built from a copy of the start commit
+  without asking (D-080). The implementer added `hello.js` and its commit
+  went in; the gate ran on a copy of that commit and passed; the reviewer
+  reported no findings. Updates gained "round 1: gates passed; no
+  findings", the task moved to `review`, and the attention notification
+  was sent. The proxy refused nothing and the token appeared nowhere in the
+  log; the gates folder and build copy were removed and no containers were
+  left.

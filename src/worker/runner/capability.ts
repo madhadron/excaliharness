@@ -16,7 +16,15 @@ const PROGRAM = /^[\w./+-]+$/;
 
 // A POSIX shell script printing one `name=ok` or `name=fail:detail` line per
 // check. Gate program names are validated before they're put in it.
-export function checkScript(gatePrograms: string[]): string {
+// Probes that need the full agent setup: the proxy running, and the session
+// volume (the gates have neither).
+export interface Probes {
+  proxy?: boolean;
+  session?: boolean;
+}
+
+export function checkScript(gatePrograms: string[], probes: Probes = {}): string {
+  const { proxy = true, session = true } = probes;
   const programs = gatePrograms.filter((p) => PROGRAM.test(p));
   const lines = [
     'say() { printf "%s=%s\\n" "$1" "$2"; }',
@@ -26,9 +34,9 @@ export function checkScript(gatePrograms: string[]): string {
     "for p in git timeout; do if command -v $p >/dev/null 2>&1; then say $p ok; else say $p fail:missing; fi; done",
     'u=$(id -u); if [ "$u" = 0 ]; then say user fail:root; else say user "ok:$u"; fi',
     `if touch "${AGENT_HOME}/.excaliharness-probe" 2>/dev/null; then rm -f "${AGENT_HOME}/.excaliharness-probe"; say home ok; else say home fail:read-only; fi`,
-    `if touch "${AGENT_HOME}/.claude/.excaliharness-probe" 2>/dev/null; then rm -f "${AGENT_HOME}/.claude/.excaliharness-probe"; say session ok; else say session fail:read-only; fi`,
+    ...(session ? [`if touch "${AGENT_HOME}/.claude/.excaliharness-probe" 2>/dev/null; then rm -f "${AGENT_HOME}/.claude/.excaliharness-probe"; say session ok; else say session fail:read-only; fi`] : []),
     'if touch /workspace/.excaliharness-probe 2>/dev/null; then rm -f /workspace/.excaliharness-probe; say workspace ok; else say workspace fail:read-only; fi',
-    `if getent hosts ${PROXY_SERVICE} >/dev/null 2>&1; then say proxy ok; else say proxy fail:unreachable; fi`,
+    ...(proxy ? [`if getent hosts ${PROXY_SERVICE} >/dev/null 2>&1; then say proxy ok; else say proxy fail:unreachable; fi`] : []),
     ...programs.map((p) => `if command -v '${p}' >/dev/null 2>&1; then say 'gate:${p}' ok; else say 'gate:${p}' fail:missing; fi`),
   ];
   return lines.join("\n");
@@ -69,8 +77,8 @@ export function interpret(output: string): CapabilityResult {
 export class CapabilityCheck {
   constructor(private readonly cacheDir: string) {}
 
-  async check(project: TaskProject, devService: string, image: string, gatePrograms: string[], signal?: AbortSignal): Promise<CapabilityResult> {
-    const key = createHash("sha256").update(`${image}\n${[...gatePrograms].sort().join("\n")}`).digest("hex").slice(0, 32);
+  async check(project: TaskProject, devService: string, image: string, gatePrograms: string[], signal?: AbortSignal, probes: Probes = {}): Promise<CapabilityResult> {
+    const key = createHash("sha256").update(`${image}\n${[...gatePrograms].sort().join("\n")}\n${JSON.stringify(probes)}`).digest("hex").slice(0, 32);
     const file = path.join(this.cacheDir, `${key}.json`);
     try {
       const cached = JSON.parse(fs.readFileSync(file, "utf8")) as CapabilityResult;
@@ -80,7 +88,7 @@ export class CapabilityCheck {
     }
     let output: string;
     try {
-      output = await project.compose(["run", "--rm", "-T", "--no-deps", devService, "sh", "-c", checkScript(gatePrograms)], {
+      output = await project.compose(["run", "--rm", "-T", "--no-deps", devService, "sh", "-c", checkScript(gatePrograms, probes)], {
         what: "the capability check",
         timeoutMs: 2 * 60_000,
         ...(signal ? { signal } : {}),

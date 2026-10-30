@@ -38,7 +38,14 @@ const runner = new TaskRunner({
   },
   log,
 });
-const orchestrator = new Orchestrator(root, { notify: () => {}, log, watch: false, runner });
+const orchestrator = new Orchestrator(root, {
+  notify: (n) => {
+    if (n.method === "task/attention") console.log(`ATTENTION: ${n.params.id} ${n.params.status}`);
+  },
+  log,
+  watch: false,
+  runner,
+});
 const status = () => /^\* status: (\S+)/m.exec(fs.readFileSync(path.join(root, "tasks/T-001.md"), "utf8"))?.[1];
 const leftover = `${projectPrefix(root)}t-999`;
 const containers = (prefix: string) => execFileSync("docker", ["ps", "-a", "--format", "{{.Names}} {{.Label \"com.docker.compose.project\"}}"], { encoding: "utf8" }).split("\n").filter((l) => l.includes(prefix));
@@ -50,7 +57,7 @@ const containers = (prefix: string) => execFileSync("docker", ["ps", "-a", "--fo
   console.log(`leftover before: ${containers(leftover).length}`);
   await orchestrator.start();
   const until = Date.now() + 15 * 60_000;
-  while (Date.now() < until && !rejected && !["needs-human", "review"].includes(status() ?? "")) {
+  while (Date.now() < until && !rejected && !["needs-human", "review", "needs-decision"].includes(status() ?? "")) {
     await new Promise((r) => setTimeout(r, 2_000));
     await orchestrator.runPass();
   }

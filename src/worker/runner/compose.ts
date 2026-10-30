@@ -46,7 +46,10 @@ export function findProjectFiles(root: string): ProjectFiles {
 
 // The parts of `docker compose config --format json` this code looks at.
 export interface ServiceConfig {
-  build?: { context?: string; dockerfile?: string };
+  build?: { context?: string; dockerfile?: string; ssh?: unknown; secrets?: unknown; additional_contexts?: unknown; network?: string; entitlements?: unknown; privileged?: boolean };
+  secrets?: unknown[];
+  configs?: unknown[];
+  volumes_from?: unknown[];
   image?: string;
   privileged?: boolean;
   cap_add?: string[];
@@ -66,8 +69,10 @@ export interface ComposeConfig {
   services: Record<string, ServiceConfig>;
 }
 
-export async function resolveConfig(run: Run, socket: string, root: string, composeFile: string): Promise<ComposeConfig> {
-  const result = await run("docker", ["compose", "--project-directory", root, "-f", path.join(root, composeFile), "config", "--format", "json"], {
+// `envFile` replaces the folder's own .env (an agent's could link to a host
+// file, D-085).
+export async function resolveConfig(run: Run, socket: string, root: string, composeFile: string, envFile?: string): Promise<ComposeConfig> {
+  const result = await run("docker", ["compose", "--project-directory", root, ...(envFile ? ["--env-file", envFile] : []), "-f", path.join(root, composeFile), "config", "--format", "json"], {
     cwd: root,
     env: dockerEnv(socket),
     timeoutMs: 60_000,
@@ -112,6 +117,91 @@ export function refusals(service: ServiceConfig, root: string): string[] {
   return problems;
 }
 
+// Whether `rel` (from path.relative) leaves its base.
+export const outside = (rel: string) => rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+
+// What an infrastructure task may build: only these of the dev service's
+// build settings, from the agent's own Compose file (D-085).
+export interface AgentBuild {
+  context: string;
+  dockerfile: string;
+  args?: Record<string, string>;
+  target?: string;
+}
+
+const AGENT_BUILD_KEYS = new Set(["context", "dockerfile", "args", "target"]);
+
+// What would let `docker compose config` itself read other files or fetch
+// remote ones, refused before it runs on an agent's file (D-085). Without a
+// YAML parser this is coarse on purpose: the words anywhere (flow style and
+// JSON included), and the YAML and JSON forms that could spell a key
+// without its plain text (escapes, tags, explicit keys).
+export function agentComposeTextProblems(text: string): string[] {
+  const problems = new Set<string>();
+  for (const m of text.matchAll(/\b(include|extends|env_file|label_file)\b/g)) if (m[1]) problems.add(`it mentions ${m[1]}`);
+  if (text.includes("\\")) problems.add("it contains a backslash");
+  if (/(^|[\s:[{,-])!/m.test(text)) problems.add("it uses a YAML tag");
+  if (/(^|[\s[{,])\?(\s|$)/m.test(text)) problems.add("it uses an explicit YAML key");
+  return [...problems];
+}
+
+// The dev service's build, checked against the allowlist (D-085). `root` is
+// the copy of the commit; context and Dockerfile must be inside it, with no
+// symlinks on the way.
+export function agentBuild(config: ComposeConfig, devService: string, root: string): { ok: true; build: AgentBuild } | { ok: false; problems: string[] } {
+  const problems: string[] = [];
+  const dev = config.services[devService] ?? {};
+  if (dev.image !== undefined) problems.push(`the ${devService} service sets image: ${dev.image}`);
+  const build = (dev.build ?? {}) as Record<string, unknown>;
+  for (const key of Object.keys(build)) if (!AGENT_BUILD_KEYS.has(key)) problems.push(`its build sets ${key}`);
+  const realRoot = fs.realpathSync(root);
+  const context = path.resolve(root, typeof build.context === "string" ? build.context : ".");
+  const dockerfile = path.resolve(context, typeof build.dockerfile === "string" ? build.dockerfile : "Dockerfile");
+  for (const [what, p, kind] of [["build context", context, "directory"], ["Dockerfile", dockerfile, "file"]] as const) {
+    let real: string;
+    try {
+      real = fs.realpathSync(p);
+    } catch {
+      problems.push(`its ${what} doesn't exist`);
+      continue;
+    }
+    // Symlinks could point anywhere on the host.
+    if (real !== path.join(realRoot, path.relative(root, p)) || outside(path.relative(realRoot, real))) problems.push(`its ${what} is outside the repository or reached through a symlink`);
+    const stat = fs.lstatSync(real);
+    if (kind === "file" ? !stat.isFile() : !stat.isDirectory()) problems.push(`its ${what} isn't a ${kind}`);
+  }
+  const args: Record<string, string> = {};
+  if (build.args !== undefined) {
+    if (typeof build.args !== "object" || build.args === null) problems.push("its build args aren't a mapping");
+    else for (const [k, v] of Object.entries(build.args as Record<string, unknown>)) args[k] = v === null || v === undefined ? "" : typeof v === "string" ? v : JSON.stringify(v);
+  }
+  if (problems.length) return { ok: false, problems };
+  const result: AgentBuild = { context: path.relative(root, context) || ".", dockerfile: path.relative(context, dockerfile) };
+  if (Object.keys(args).length) result.args = args;
+  if (build.target !== undefined) {
+    if (typeof build.target !== "string" || !/^[A-Za-z0-9_.-]+$/.test(build.target)) problems.push("its build target isn't a plain stage name");
+    else result.target = build.target;
+  }
+  for (const key of Object.keys(args)) if (!/^[A-Za-z0-9_.-]+$/.test(key)) problems.push(`its build arg ${key} isn't a plain name`);
+  if (problems.length) return { ok: false, problems };
+  return { ok: true, build: result };
+}
+
+// The Compose file an infrastructure task's image is built from: the dev
+// service's allowed build settings only (D-085).
+export function agentBuildCompose(build: AgentBuild, imageName: string): string {
+  const spec: Record<string, YamlValue> = { context: literal(build.context), dockerfile: literal(build.dockerfile) };
+  if (build.args) spec.args = Object.fromEntries(Object.entries(build.args).map(([k, v]) => [k, literal(v)]));
+  if (build.target) spec.target = literal(build.target);
+  return toYaml({ services: { dev: { build: spec, image: imageName } } });
+}
+
+// Service, network or volume names that could stand in for ours.
+export function reservedNames(config: ComposeConfig & { networks?: Record<string, unknown>; volumes?: Record<string, unknown> }): string[] {
+  const names = [...Object.keys(config.services), ...Object.keys(config.networks ?? {}), ...Object.keys(config.volumes ?? {})];
+  return names.filter((n) => n.startsWith("excaliharness")).map((n) => `${n} is a name reserved for Excaliharness`);
+}
+
 // Images named like ours could stand in for them (D-079).
 export function imageRefusals(config: ComposeConfig): string[] {
   return Object.entries(config.services)
@@ -130,6 +220,8 @@ export interface OverrideOptions {
   project: string;
   // An empty file mounted over the worktree's .git (D-079).
   emptyFile: string;
+  readOnly?: boolean;
+  session?: boolean;
 }
 
 // Compose interpolates `$` in strings; ours are literal.
@@ -144,6 +236,11 @@ function agentEnvironment(): Record<string, string> {
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     DISABLE_AUTOUPDATER: "1",
     HOME: AGENT_HOME,
+    // An image built from an agent's Dockerfile could set these to run its
+    // code inside every Node or dynamically linked process (D-085).
+    NODE_OPTIONS: "",
+    LD_PRELOAD: "",
+    LD_LIBRARY_PATH: "",
   };
 }
 
@@ -181,20 +278,27 @@ function proxyService(proxyImage: string): Record<string, YamlValue> {
   };
 }
 
-interface AgentMounts {
+export interface AgentMounts {
   root: string;
+  // What is mounted at /workspace: the task's worktree, or for the gates a
+  // copy of the round's commit (D-081).
   worktree: string;
   emptyFile: string;
+  // Reviewers get /workspace read-only (D-072).
+  readOnly?: boolean;
+  // Only the implementer keeps a session; reviewers and gates start fresh and
+  // never see it (D-082).
+  session?: boolean;
 }
 
-function agentVolumes({ root, worktree, emptyFile }: AgentMounts): string[] {
+function agentVolumes({ root, worktree, emptyFile, readOnly = false, session = true }: AgentMounts): string[] {
   // The worktree's .git file names a git directory on the host; the agent
   // gets an empty one instead, so there's nothing there to rewrite (D-079).
-  const mounts = [`${literal(worktree)}:/workspace`, `${literal(emptyFile)}:/workspace/.git:ro`];
+  const mounts = [`${literal(worktree)}:/workspace${readOnly ? ":ro" : ""}`, `${literal(emptyFile)}:/workspace/.git:ro`];
   for (const rel of READ_ONLY_PATHS) {
     if (fs.existsSync(path.join(root, rel))) mounts.push(`${literal(path.join(root, rel))}:/workspace/${rel}:ro`);
   }
-  mounts.push(`${SESSION_VOLUME}:${AGENT_HOME}/.claude`);
+  if (session) mounts.push(`${SESSION_VOLUME}:${AGENT_HOME}/.claude`);
   return mounts;
 }
 
@@ -242,7 +346,8 @@ export function generateOverride(options: OverrideOptions): { yaml: string; unco
   };
   const unconnected: string[] = [];
   for (const [name, service] of Object.entries(options.config.services)) {
-    if (name === options.devService) continue;
+    // Never over our own entries.
+    if (name === options.devService || name === PROXY_SERVICE) continue;
     if (service.network_mode) {
       unconnected.push(name);
       continue;
@@ -253,6 +358,23 @@ export function generateOverride(options: OverrideOptions): { yaml: string; unco
     services[name] = { networks, ports: reset([]), container_name: reset(null) };
   }
   return { yaml: toYaml({ networks: sharedNetworks(), volumes: sessionVolume(options.project), services }), unconnected };
+}
+
+// The build settings for building from the task's worktree instead of the
+// main checkout (D-062): every build context inside the repository moves to
+// the same place in the worktree. The Compose file itself stays the main
+// checkout's (D-059).
+export function buildOverride(config: ComposeConfig, root: string, worktree: string): string {
+  const services: Record<string, YamlValue> = {};
+  for (const [name, service] of Object.entries(config.services)) {
+    const context = service.build?.context;
+    if (context === undefined) continue;
+    if (/^[a-z]+:\/\/|^git@/i.test(context)) continue;
+    const rel = path.relative(root, path.resolve(root, context));
+    if (outside(rel)) continue;
+    services[name] = { build: { context: literal(path.join(worktree, rel)) } };
+  }
+  return toYaml({ services });
 }
 
 // A complete Compose file for an infrastructure task, which runs in the base
