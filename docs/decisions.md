@@ -1040,3 +1040,15 @@ question (see D-011) rather than made unilaterally.
   env file of ours instead of the agent's `.env`. The task's reviewers run
   in the base agent image, not the one its Dockerfile built. Agent
   containers get empty `NODE_OPTIONS`, `LD_PRELOAD` and `LD_LIBRARY_PATH`.
+
+## D-086 Follow-up review rounds are scoped
+- Date: 2026-10-30
+- Decision: A unit's first review is all three D-019 reviewers, given the
+  threat model and the unit's decisions and scoped to its diff. Later rounds
+  happen only for blocking or security fixes, scoped to the fix diff: the
+  security reviewer plus whichever reviewer raised the item; robustness and
+  correctness reviewers may use a cheaper model. Review stops when a round
+  finds nothing blocking; remaining nits go on the roadmap. Amends D-019.
+- Reason: Units A and B used 21 reviewer runs; after the first round, most
+  findings outside security were nits, while each run cost 100–170k tokens.
+- Rejected: Three full reviewers for every fix round.
