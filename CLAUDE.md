@@ -8,17 +8,16 @@
 - Commands for this repo are in the README's Quick reference. Run them through
   `make`; nothing gets installed on the host.
 
-## Review rule (D-019, amended by D-086)
-- Every unit of generated code goes to three separate reviewer subagents
-  before the human sees it: (1) robustness to errors and crashes;
-  (2) correctness and idiomatic TypeScript; (3) security, including any place
+## Review rule (D-019, amended by D-086, D-087)
+- Every unit of generated code goes through one `reviewer` subagent run
+  (via the `review` skill) before the human sees it. It covers robustness,
+  correctness and idiomatic TypeScript, and security, including any place
   where agents running under the orchestrator get more than the essential
   access outside their container. Code under `experiments/` is exempt.
-- Give reviewers the threat model below and the unit's decisions, and scope
-  them to the unit's diff.
+- Give the reviewer the threat model below and the unit's decisions, and
+  scope it to the unit's diff.
 - Follow-up rounds only for blocking or security fixes, scoped to the fix
-  diff: the security reviewer plus whichever reviewer raised the item.
-  Robustness and correctness reviewers may use a cheaper model.
+  diff; they may use a cheaper model.
 - Stop when a round finds nothing blocking; remaining nits go on the
   roadmap.
 

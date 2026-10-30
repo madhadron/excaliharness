@@ -1052,3 +1052,21 @@ question (see D-011) rather than made unilaterally.
 - Reason: Units A and B used 21 reviewer runs; after the first round, most
   findings outside security were nits, while each run cost 100–170k tokens.
 - Rejected: Three full reviewers for every fix round.
+
+## D-087 One JSON reviewer agent replaces the three focused reviewers
+- Date: 2026-10-30
+- Decision: Code review uses one global `reviewer` subagent
+  (`~/.claude/agents/reviewer.md`, `model: opus`), run once per unit and
+  covering robustness, correctness and security together. It returns only
+  JSON: `{"findings":[{where:{file,line,symbol?},what,suggested_fix,severity}]}`
+  with severity `blocking`, `guardrail` (may be fine in context but needs a
+  guardrail to ensure it) or `nit`; `symbol` is a Serena name path. JSON-only
+  is asked for in the prompt; nothing enforces it. Tools: Read, Grep, Glob,
+  Serena and Thenwise MCP tools. A global `review` skill tells Claude to run
+  it proactively when programming. Callers still pass the threat model and
+  the unit's decisions and scope it to the diff. D-086's scoping of follow-up
+  rounds still holds, and a follow-up round may pass a cheaper model as
+  D-086 allows. Amends D-019 and D-086.
+- Reason: Chosen by the human.
+- Rejected: Three runs, one per focus; a SubagentStop hook that checks the
+  JSON with jq; a read-only toolset without Serena; a project-only agent.
