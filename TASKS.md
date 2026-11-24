@@ -9,7 +9,7 @@ Planned work for Excaliharness itself, in its own format
     * review: [[agents/robustness-reviewer]], [[agents/correctness-reviewer]], [[agents/security-reviewer]]
 
 ## Index
-* [[T-001]] Open-review link and URI handler · draft
+* [[T-001]] Open-review link and URI handler · needs-human
 * [[T-002]] Line comments on a task's review · draft
 * [[T-003]] Chat participant for change requests · draft
 * [[T-004]] Approve merges the task branch · draft
@@ -18,7 +18,7 @@ Planned work for Excaliharness itself, in its own format
 * [[T-007]] Create the Quick reference task when it's missing · draft
 * [[T-008]] Diagnostic for pipelines naming missing agents · draft
 * [[T-009]] New task CodeLens in TASKS.md · draft
-* [[T-010]] Agents pane · draft
+* [[T-010]] Agents pane, activity log and status bar · draft
 * [[T-011]] Set the number of parallel tasks from the extension · draft
 * [[T-012]] Clean up old images and volumes · draft
 * [[T-013]] Split the capability check's cache · draft
@@ -32,3 +32,9 @@ Planned work for Excaliharness itself, in its own format
 * [[T-021]] Pin the base image's apt packages · draft
 * [[T-022]] Stop the agent's whole process tree · draft
 * [[T-023]] Support malicious target repositories · draft
+* [[T-024]] "Send back to agent" CodeLens for needs-human tasks · draft
+* [[T-025]] Show a running task's changes live · draft
+* [[T-026]] Controls on a running agent · draft
+* [[T-027]] Keep agent transcripts for review · draft
+* [[T-028]] Token and cost totals per task · draft
+* [[T-029]] `make parse` checks task files without spending tokens · draft

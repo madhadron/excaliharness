@@ -1,6 +1,6 @@
 x-dev: &dev
   build: .
-  image: excaliharness-dev
+  image: exh-dev
   init: true
   working_dir: /workspace
 

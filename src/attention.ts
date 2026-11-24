@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { attentionAction, attentionMessage } from "./attentionText";
+import { attentionAction, attentionMessage, spokenMessage } from "./attentionText";
 import type { TaskAttention } from "./worker/protocol";
 
 export const OPEN_TASK_COMMAND = "excaliharness.openTaskAt";
@@ -22,7 +22,7 @@ function say(text: string, output: vscode.LogOutputChannel): void {
 
 export function showAttention(root: string, a: TaskAttention, output: vscode.LogOutputChannel): void {
   const message = attentionMessage(a);
-  say(message, output);
+  say(spokenMessage(a), output);
   const action = attentionAction(a);
   const failed = (error: unknown) => output.warn(`couldn't open ${a.id}: ${error instanceof Error ? error.message : String(error)}`);
   vscode.window.showInformationMessage(`${message}: ${a.title}`, action).then((choice) => {

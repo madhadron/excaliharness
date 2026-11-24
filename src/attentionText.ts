@@ -8,6 +8,13 @@ export function attentionMessage(a: Pick<TaskAttention, "id" | "status">): strin
   return `Task ${a.id} needs you`;
 }
 
+// The same, for speech: "T-001" read aloud is "T minus zero zero one", so
+// the number is spoken plainly ("Task 1 is ready for review", D-084).
+export function spokenMessage(a: Pick<TaskAttention, "id" | "status">): string {
+  const n = /^T-0*(\d+)$/.exec(a.id)?.[1] ?? a.id;
+  return attentionMessage({ ...a, id: n });
+}
+
 // The button: the task file at its questions for a question, otherwise the
 // worktree, when there is one.
 export function attentionAction(a: Pick<TaskAttention, "status" | "worktree">): "Open task" | "Open review" {

@@ -696,6 +696,11 @@ question (see D-011) rather than made unilaterally.
   dev environment. None or more than one refuses the start, with a message.
 - Reason: No new convention for repos.
 - Rejected: A fixed service name; a label.
+- Amended 2026-10-30: when several services build from the root
+  `Dockerfile` (a web service and a worker, or this repo's `dev` and
+  `lock`), the one named `dev` is the dev service; with none named `dev`,
+  the start is refused with a message saying to name one. Rejected: a
+  label; changing only this repo's Compose file.
 
 ## D-064 A thin derived image adds Claude Code
 - Date: 2026-10-24
@@ -1017,6 +1022,9 @@ question (see D-011) rather than made unilaterally.
   `needs-human` ("Task T-007 needs you"), and `needs-decision` ("Task T-007
   has a question for you", with "Open task" opening the task file at
   `## Questions` instead of "Open review"). Amends D-077.
+- Amended 2026-10-30: speech says the task's number plainly ("Task 1 is
+  ready for review"), since `say` reads "T-001" as letters and digits; the
+  visual notification keeps the ID.
 
 ## D-085 Infrastructure tasks run only their dev service
 - Date: 2026-10-25

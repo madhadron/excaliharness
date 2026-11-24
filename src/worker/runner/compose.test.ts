@@ -64,13 +64,21 @@ describe("findDevService", () => {
     expect(findDevService(config(), root)).toEqual({ ok: true, name: "dev" });
   });
 
-  it("refuses none or more than one", () => {
+  it("picks the one named dev when several build from the root Dockerfile (D-063)", () => {
+    const two = config();
+    two.services.lock = { build: { context: root } };
+    expect(findDevService(two, root)).toEqual({ ok: true, name: "dev" });
+  });
+
+  it("refuses none, or several with none named dev", () => {
     const none = config();
     delete none.services.dev;
     expect(findDevService(none, root)).toMatchObject({ ok: false, error: expect.stringMatching(/no Compose service/) as unknown });
     const two = config();
     two.services.other = { build: { context: root } };
-    expect(findDevService(two, root)).toMatchObject({ ok: false, error: expect.stringMatching(/more than one/) as unknown });
+    two.services.web = two.services.dev ?? {};
+    delete two.services.dev;
+    expect(findDevService(two, root)).toMatchObject({ ok: false, error: expect.stringMatching(/more than one.*none is named dev/) as unknown });
     const elsewhere = config();
     elsewhere.services.dev = { build: { context: path.join(root, "sub") } };
     expect(findDevService(elsewhere, root).ok).toBe(false);

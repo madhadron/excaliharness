@@ -92,7 +92,9 @@ export function findDevService(config: ComposeConfig, root: string): { ok: true;
     .map(([name]) => name);
   if (matches.length === 1 && matches[0]) return { ok: true, name: matches[0] };
   if (matches.length === 0) return { ok: false, error: "no Compose service builds from the root Dockerfile (build: .), so there's no dev service to run agents in" };
-  return { ok: false, error: `more than one Compose service builds from the root Dockerfile (${matches.join(", ")}), so the dev service is ambiguous` };
+  // Several (e.g. a web service and a worker): the one named dev (D-063).
+  if (matches.includes("dev")) return { ok: true, name: "dev" };
+  return { ok: false, error: `more than one Compose service builds from the root Dockerfile (${matches.join(", ")}) and none is named dev; name the one agents should work in dev` };
 }
 
 // D-059: settings on the dev service that refuse the start.
